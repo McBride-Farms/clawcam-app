@@ -25,7 +25,12 @@ jobs:
         # placeholder 10.255.0.x at startup; our entrypoint flushes that and
         # runs dhclient, which asks pfSense for a real LAN lease and
         # advertises `--hostname` so kea2unbound publishes
-        # clawcam-app.mcbridefarm.com automatically.
+        # clawcam-app.mcbridefarm.com automatically. Host-side paths
+        # (data volume + env file location) come from repo secrets so
+        # infrastructure layout isn't recorded in public git history.
+        env:
+          DATA_DIR: ${{ secrets.DEPLOY_DATA_DIR }}
+          ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
         run: |
           docker rm -f clawcam-app 2>/dev/null || true
           docker run -d \
@@ -35,8 +40,8 @@ jobs:
             --hostname clawcam-app \
             --mac-address 02:42:c0:a8:01:f1 \
             --cap-add NET_ADMIN \
-            -v /home/grunt/clawcam-app/data:/app/data \
-            --env-file /home/grunt/clawcam-app/server/.env \
+            -v "$DATA_DIR":/app/data \
+            --env-file "$ENV_FILE" \
             -e CLAWCAM_APP_DATA_DIR=/app/data \
             clawcam-app:latest
 
