@@ -112,6 +112,36 @@ export function ingestEvent(payload) {
   return { event_id: eventId, phase };
 }
 
+// Close events that were marked "active" but haven't received a webhook update
+// in `staleSeconds`. Without this, events stranded by a mid-event clawcam restart
+// (SIGTERM between start and end) stay "active" forever with no clip. The
+// clawcam service also tries to flush an end-phase webhook on shutdown, so this
+// is a safety net for cases where that flush fails or never ran.
+export function reapStaleEvents(staleSeconds = 300) {
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - staleSeconds;
+  const toReap = db
+    .prepare(
+      `SELECT event_id, host, started_epoch, updated_at FROM events WHERE status = 'active' AND updated_at < ?`
+    )
+    .all(cutoff);
+  if (toReap.length === 0) return 0;
+  const update = db.prepare(`
+    UPDATE events
+       SET status = 'ended',
+           ended_epoch = COALESCE(ended_epoch, updated_at),
+           duration_secs = COALESCE(duration_secs, updated_at - started_epoch),
+           updated_at = ?
+     WHERE event_id = ?
+  `);
+  for (const row of toReap) {
+    update.run(now, row.event_id);
+    const evRow = stmts.getEvent.get(row.event_id);
+    broadcast("event", { ...evRow, phase: "end", detail: "stale_close" });
+  }
+  return toReap.length;
+}
+
 export function pruneOldEvents() {
   const cutoff = Math.floor(Date.now() / 1000) - config.retentionDays * 86400;
   const toDelete = db

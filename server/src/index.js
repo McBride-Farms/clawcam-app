@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { buildRouter, requireAuth } from "./api.js";
 import { sseHandler } from "./sse.js";
-import { pruneOldEvents } from "./ingest.js";
+import { pruneOldEvents, reapStaleEvents } from "./ingest.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, "..", "public");
@@ -53,6 +53,15 @@ setInterval(() => {
     console.error("prune error", e);
   }
 }, 3600 * 1000).unref();
+
+setInterval(() => {
+  try {
+    const n = reapStaleEvents(300);
+    if (n) console.log(`reaped ${n} stale active events`);
+  } catch (e) {
+    console.error("reap error", e);
+  }
+}, 60 * 1000).unref();
 
 function redactUrl(url) {
   return url.replace(/([?&]token=)[^&]+/i, "$1[redacted]");
