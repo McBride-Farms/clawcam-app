@@ -17,26 +17,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run deploy.sh (in-place on the runner host)
-        working-directory: server
-        env:
-          REMOTE: ${{ secrets.DEPLOY_SSH_TARGET }}
-          REMOTE_DIR: ${{ secrets.DEPLOY_DIR }}
-          CLAWCAM_APP_TOKEN: ${{ secrets.CLAWCAM_APP_TOKEN }}
-        run: bash deploy.sh
+      - name: Build image
+        run: docker build -t clawcam-app:${{ github.sha }} -t clawcam-app:latest server/
 
-      - name: Restart service + smoke test
-        env:
-          REMOTE: ${{ secrets.DEPLOY_SSH_TARGET }}
+      - name: Recreate container
+        # The container attaches to the `lan-dhcp` macvlan. Docker gives it a
+        # placeholder 10.255.0.x at startup; our entrypoint flushes that and
+        # runs dhclient, which asks pfSense for a real LAN lease and
+        # advertises `--hostname` so kea2unbound publishes
+        # clawcam-app.mcbridefarm.com automatically.
         run: |
-          # Routed through sshd so the user session / D-Bus env is set up for
-          # `systemctl --user`; a bare runner step runs without that context.
-          ssh "$REMOTE" "
-            systemctl --user restart clawcam-app
-            for i in 1 2 3 4 5 6 7 8; do
-              sleep 1
-              systemctl --user is-active clawcam-app >/dev/null && break
-            done
-            systemctl --user is-active clawcam-app
-            curl -fsS http://127.0.0.1:8080/api/health
-          "
+          docker rm -f clawcam-app 2>/dev/null || true
+          docker run -d \
+            --name clawcam-app \
+            --restart unless-stopped \
+            --network lan-dhcp \
+            --hostname clawcam-app \
+            --mac-address 02:42:c0:a8:01:f1 \
+            --cap-add NET_ADMIN \
+            -v /home/grunt/clawcam-app/data:/app/data \
+            --env-file /home/grunt/clawcam-app/server/.env \
+            -e CLAWCAM_APP_DATA_DIR=/app/data \
+            clawcam-app:latest
+
+      - name: Smoke test
+        env:
+          HOST: clawcam-app.mcbridefarm.com
+        run: |
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -fsS --max-time 3 "http://$HOST/api/health" >/dev/null 2>&1; then
+              echo "healthy at http://$HOST/"
+              exit 0
+            fi
+          done
+          echo "smoke test failed — recent logs:"
+          docker logs --tail 40 clawcam-app || true
+          exit 1
