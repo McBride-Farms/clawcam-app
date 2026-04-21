@@ -174,7 +174,7 @@ export function buildRouter() {
       if (tok !== config.token) return res.status(401).json({ error: "unauthorized" });
     }
     // Broadcast without persisting — telemetry is ephemeral.
-    const { broadcast } = globalThis.__clawcam-appSse || {};
+    const { broadcast } = globalThis.__clawcamAppSse || {};
     if (broadcast) broadcast("telemetry", req.body || {});
     res.json({ ok: true });
   });

@@ -28,4 +28,4 @@ export function broadcast(eventName, data) {
 }
 
 // Expose globally so api.js can publish without circular imports.
-globalThis.__clawcam-appSse = { broadcast };
+globalThis.__clawcamAppSse = { broadcast };
