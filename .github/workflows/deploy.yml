@@ -19,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stop legacy host-level service (idempotent)
+        # Earlier deploys ran clawcam-app as a systemd --user service binding
+        # :8080 on the host. Container deploy owns port 80 on its own LAN IP,
+        # but we stop the legacy unit anyway so it doesn't drift out of sync.
+        run: |
+          systemctl --user stop clawcam-app 2>/dev/null || true
+          systemctl --user disable clawcam-app 2>/dev/null || true
+
       - name: Build image
         run: docker build -t clawcam-app:${{ github.sha }} -t clawcam-app:latest server/
 
@@ -48,13 +56,16 @@ jobs:
             clawcam-app:latest
 
       - name: Smoke test
-        env:
-          HOST: clawcam-app.mcbridefarm.com
+        # Linux's macvlan driver silently drops frames between the host and
+        # containers attached to a macvlan on the host's own NIC, so curl
+        # from the runner host to the container's LAN IP times out even
+        # when the container is healthy (every other LAN host sees it
+        # fine). We verify health in-container via `docker exec` instead.
         run: |
-          for i in $(seq 1 30); do
+          for i in $(seq 1 20); do
             sleep 2
-            if curl -fsS --max-time 3 "http://$HOST/api/health" >/dev/null 2>&1; then
-              echo "healthy at http://$HOST/"
+            if docker exec clawcam-app sh -c 'wget -qO- --timeout=2 http://127.0.0.1/api/health' >/dev/null 2>&1; then
+              echo "healthy"
               exit 0
             fi
           done
