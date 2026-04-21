@@ -13,7 +13,9 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    # This runs on grunt-node1 (x86_64). pi-runner-1 is ARM64 and doesn't
+    # have Docker; we constrain to X64 so the scheduler picks the right one.
+    runs-on: [self-hosted, X64]
     steps:
       - uses: actions/checkout@v4
 
