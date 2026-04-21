@@ -16,7 +16,17 @@ if ip link show "$iface" >/dev/null 2>&1; then
   # it so dhclient starts from a clean slate and the real pfSense-issued
   # lease is the only address configured.
   ip -4 addr flush dev "$iface"
-  timeout 20 dhclient -v -H "$(hostname)" "$iface" || \
+
+  # ISC dhclient doesn't take a hostname CLI flag — option 12 goes in the
+  # config file. Writing the container's hostname tells pfSense what to
+  # record, so kea2unbound can resolve <hostname>.mcbridefarm.com.
+  mkdir -p /etc/dhcp
+  cat > /etc/dhcp/dhclient.conf <<EOF
+send host-name "$(hostname)";
+send dhcp-client-identifier = hardware;
+EOF
+
+  timeout 20 dhclient -v "$iface" || \
     echo "docker-entrypoint: dhclient failed, continuing without lease" >&2
 fi
 
