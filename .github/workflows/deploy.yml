@@ -25,9 +25,16 @@ jobs:
           CLAWCAM_APP_TOKEN: ${{ secrets.CLAWCAM_APP_TOKEN }}
         run: bash deploy.sh
 
-      - name: Restart service
+      - name: Restart service + smoke test
         run: |
-          systemctl --user restart clawcam-app || true
-          sleep 2
-          systemctl --user is-active clawcam-app
-          curl -fsS http://127.0.0.1:8080/api/health
+          # Routed through sshd so the user session / D-Bus env is set up for
+          # `systemctl --user`; a bare runner step runs without that context.
+          ssh grunt@localhost "
+            systemctl --user restart clawcam-app
+            for i in 1 2 3 4 5 6 7 8; do
+              sleep 1
+              systemctl --user is-active clawcam-app >/dev/null && break
+            done
+            systemctl --user is-active clawcam-app
+            curl -fsS http://127.0.0.1:8080/api/health
+          "
