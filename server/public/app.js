@@ -59,28 +59,172 @@ async function sendPtz(host, body) {
 }
 
 function wireTilePtz(tile, host) {
-  const btns = tile.querySelectorAll(".ptz button[data-ptz]");
-  let busy = false;
-  btns.forEach((b) => {
-    b.addEventListener("click", async (e) => {
+  // Home is a one-shot click; every other button is press-and-hold.
+  // While held: fire a short burst, then re-fire it at REISSUE_MS intervals
+  // so the motor stays running. On release: explicit stop. If the release
+  // gets dropped by the network, the motor's own auto-stop kicks in after
+  // BURST_MS (≤1s fallback) instead of running for a long tail.
+  const BURST_MS = 800;
+  const REISSUE_MS = 500;
+
+  const bodyFor = (action) => {
+    switch (action) {
+      case "up":       return { tilt: +1, duration_ms: BURST_MS };
+      case "down":     return { tilt: -1, duration_ms: BURST_MS };
+      case "left":     return { pan: -1,  duration_ms: BURST_MS };
+      case "right":    return { pan: +1,  duration_ms: BURST_MS };
+      case "zoom-in":  return { zoom: +1, duration_ms: BURST_MS };
+      case "zoom-out": return { zoom: -1, duration_ms: BURST_MS };
+      default: return null;
+    }
+  };
+
+  tile.querySelectorAll(".ptz button[data-ptz]").forEach((b) => {
+    const action = b.dataset.ptz;
+
+    if (action === "home") {
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        sendPtz(host, { home: true });
+      });
+      return;
+    }
+
+    const body = bodyFor(action);
+    if (!body) return;
+
+    let activePointer = null;
+    let reissueTimer = null;
+
+    const start = (e) => {
+      if (activePointer !== null) return;
+      e.preventDefault();
       e.stopPropagation();
-      if (busy) return;
-      const action = b.dataset.ptz;
-      const body =
-        action === "home"    ? { home: true } :
-        action === "up"      ? { tilt: +1 } :
-        action === "down"    ? { tilt: -1 } :
-        action === "left"    ? { pan: -1 } :
-        action === "right"   ? { pan: +1 } :
-        action === "zoom-in" ? { zoom: +4 } :
-        action === "zoom-out"? { zoom: -4 } : null;
-      if (!body) return;
-      busy = true;
-      btns.forEach((x) => (x.disabled = true));
-      try { await sendPtz(host, body); }
-      finally { busy = false; btns.forEach((x) => (x.disabled = false)); }
-    });
+      activePointer = e.pointerId;
+      b.setPointerCapture?.(e.pointerId);
+      b.classList.add("active");
+      sendPtz(host, body);
+      reissueTimer = setInterval(() => sendPtz(host, body), REISSUE_MS);
+    };
+    const stop = (e) => {
+      if (activePointer === null) return;
+      activePointer = null;
+      if (reissueTimer) { clearInterval(reissueTimer); reissueTimer = null; }
+      try { b.releasePointerCapture?.(e.pointerId); } catch {}
+      b.classList.remove("active");
+      sendPtz(host, { stop: true });
+    };
+
+    b.addEventListener("pointerdown", start);
+    b.addEventListener("pointerup", stop);
+    b.addEventListener("pointercancel", stop);
+    b.addEventListener("pointerleave", stop);
   });
+
+  wireTileJoystick(tile, host);
+}
+
+// Analog-ish pan/tilt via a draggable thumb. The on-device VISCA server
+// sustains motion for the full duration_ms, so we just keep issuing fresh
+// direction bursts every REISSUE_MS while the user's finger is down and
+// fire a stop on release. Direction is quantized to {-1, 0, +1} per axis
+// because VISCA drive takes integer direction bytes.
+function wireTileJoystick(tile, host) {
+  const root = tile.querySelector(".ptz-joystick");
+  if (!root) return;
+  const base = root.querySelector(".ptz-joystick-base");
+  const thumb = root.querySelector(".ptz-joystick-thumb");
+  if (!base || !thumb) return;
+
+  const DEADZONE = 0.18;      // fraction of radius before we consider it "off-center"
+  const REISSUE_MS = 250;     // re-send the direction burst every N ms while held
+  const BURST_MS = 400;       // duration of each burst; must exceed REISSUE_MS so motion is continuous
+
+  let pointerId = null;
+  let lastDir = { pan: 0, tilt: 0 };
+  let reissueTimer = null;
+
+  function setThumb(dx, dy) {
+    thumb.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+  }
+  function resetThumb() {
+    thumb.style.transform = "translate(-50%, -50%)";
+  }
+
+  function dirFromNormalized(nx, ny) {
+    return {
+      pan:  Math.abs(nx) < DEADZONE ? 0 : (nx > 0 ? +1 : -1),
+      tilt: Math.abs(ny) < DEADZONE ? 0 : (ny > 0 ? -1 : +1), // screen-y grows down, tilt=+1 is up
+    };
+  }
+
+  function issueBurst(dir) {
+    if (dir.pan === 0 && dir.tilt === 0) return;
+    sendPtz(host, { pan: dir.pan, tilt: dir.tilt, duration_ms: BURST_MS });
+  }
+
+  function stopReissue() {
+    if (reissueTimer) { clearInterval(reissueTimer); reissueTimer = null; }
+  }
+
+  function onDown(ev) {
+    if (pointerId !== null) return;
+    pointerId = ev.pointerId;
+    base.setPointerCapture?.(pointerId);
+    ev.preventDefault();
+    ev.stopPropagation();
+    onMove(ev);
+  }
+
+  function onMove(ev) {
+    if (pointerId === null || ev.pointerId !== pointerId) return;
+    const rect = base.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const radius = rect.width / 2;
+    let dx = ev.clientX - cx;
+    let dy = ev.clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    const thumbMax = radius * 0.7;
+    if (dist > thumbMax) {
+      dx = (dx / dist) * thumbMax;
+      dy = (dy / dist) * thumbMax;
+    }
+    setThumb(dx, dy);
+    const nx = dx / thumbMax;
+    const ny = dy / thumbMax;
+    const dir = dirFromNormalized(nx, ny);
+
+    if (dir.pan !== lastDir.pan || dir.tilt !== lastDir.tilt) {
+      // Direction changed — fire immediately and reset the reissue cadence.
+      lastDir = dir;
+      stopReissue();
+      if (dir.pan === 0 && dir.tilt === 0) {
+        sendPtz(host, { stop: true });
+      } else {
+        issueBurst(dir);
+        reissueTimer = setInterval(() => issueBurst(lastDir), REISSUE_MS);
+      }
+    }
+  }
+
+  function onUp(ev) {
+    if (pointerId === null || (ev && ev.pointerId !== pointerId)) return;
+    try { base.releasePointerCapture?.(pointerId); } catch {}
+    pointerId = null;
+    resetThumb();
+    stopReissue();
+    if (lastDir.pan !== 0 || lastDir.tilt !== 0) {
+      sendPtz(host, { stop: true });
+    }
+    lastDir = { pan: 0, tilt: 0 };
+  }
+
+  base.addEventListener("pointerdown", onDown);
+  base.addEventListener("pointermove", onMove);
+  base.addEventListener("pointerup", onUp);
+  base.addEventListener("pointercancel", onUp);
+  base.addEventListener("pointerleave", onUp);
 }
 
 async function renderLive() {
@@ -122,6 +266,12 @@ async function renderLive() {
         <div class="label"><span class="dot dead"></span><span>${name}</span></div>
         <div class="age">—</div>
         <div class="ptz" data-stop-focus title="Pan / Tilt / Zoom">
+          <div class="ptz-joystick" aria-label="Pan/tilt joystick">
+            <div class="ptz-joystick-base">
+              <div class="ptz-joystick-thumb"></div>
+            </div>
+            <button class="ptz-home ptz-joystick-home" data-ptz="home" title="Re-center">⌂</button>
+          </div>
           <div class="ptz-dpad">
             <button class="ptz-empty" tabindex="-1"></button>
             <button data-ptz="up" title="Tilt up">▲</button>
@@ -524,29 +674,51 @@ function connectStream() {
   });
 }
 
+// Telemetry (bboxes) arrives via SSE with no appreciable network delay, but
+// the HLS video stream plays ~1–2 s behind real time due to segment buffering.
+// If we paint bboxes the moment they arrive, they sit ahead of the video
+// frame they describe. We defer each overlay paint by roughly the video's
+// live-edge latency so bbox and frame land together.
 function drawOverlay(t) {
   if (!t.host || !t.width || !t.height) return;
-  // Telemetry uses the Pi's own hostname, device names, or IP — match on hostname first, then device name.
   const tiles = document.querySelectorAll(".live-tile");
   for (const tile of tiles) {
     const host = tile.dataset.host;
     const name = tile.dataset.name;
     if (t.host !== host && t.host !== name) continue;
-    const svg = tile.querySelector("svg.overlay");
-    if (!svg) continue;
-    const W = t.width, H = t.height;
-    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-    const preds = t.predictions || [];
-    svg.innerHTML = preds.map((p) => {
-      const w = p.right - p.left;
-      const h = p.bottom - p.top;
-      const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
-      return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}" /><text x="${p.left + 4}" y="${p.top + 14}">${label}</text></g>`;
-    }).join("");
-    // Auto-clear if no more frames arrive within 1.5s (handled by next telemetry or timeout).
-    if (tile._overlayTimer) clearTimeout(tile._overlayTimer);
-    tile._overlayTimer = setTimeout(() => { svg.innerHTML = ""; }, 1500);
+    const entry = liveState.tiles.get(name);
+    const delayMs = estimateVideoDelayMs(entry);
+    if (tile._overlayDelay) clearTimeout(tile._overlayDelay);
+    tile._overlayDelay = setTimeout(() => paintOverlay(tile, t), delayMs);
   }
+}
+
+function estimateVideoDelayMs(entry) {
+  const hls = entry?.hls;
+  // hls.js populates `latency` (seconds) for live LL-HLS streams once a few
+  // segments have loaded. Before that, fall back to a conservative default
+  // tuned for MediaMTX at 2 s segments.
+  if (hls && typeof hls.latency === "number" && hls.latency > 0.2) {
+    return Math.min(5000, Math.round(hls.latency * 1000));
+  }
+  return 1400;
+}
+
+function paintOverlay(tile, t) {
+  const svg = tile.querySelector("svg.overlay");
+  if (!svg) return;
+  const W = t.width, H = t.height;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const preds = t.predictions || [];
+  svg.innerHTML = preds.map((p) => {
+    const w = p.right - p.left;
+    const h = p.bottom - p.top;
+    const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
+    return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}" /><text x="${p.left + 4}" y="${p.top + 14}">${label}</text></g>`;
+  }).join("");
+  // Clear the overlay if no fresh paint arrives within 1.5 s.
+  if (tile._overlayTimer) clearTimeout(tile._overlayTimer);
+  tile._overlayTimer = setTimeout(() => { svg.innerHTML = ""; }, 1500);
 }
 
 function showFlash(ev) {

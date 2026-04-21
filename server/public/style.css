@@ -119,6 +119,53 @@ main { padding: 20px; max-width: 1100px; margin: 0 auto; }
 .live-tile .ptz-zoom button:disabled { opacity: 0.35; cursor: default; }
 .live-tile .ptz-zoom .ptz-z-label { font-size: 0.65rem; color: var(--muted); }
 .live-tile .ptz.hidden { display: none; }
+
+/* Touch joystick: hidden by default (desktop = d-pad). Toggled visible on
+   coarse-pointer devices (phones/tablets) via media query below. */
+.live-tile .ptz-joystick { display: none; position: relative; align-items: center; gap: 8px; }
+.live-tile .ptz-joystick-base {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, rgba(255,255,255,0.10), rgba(255,255,255,0.04) 70%);
+  border: 1px solid var(--border);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.live-tile .ptz-joystick-thumb {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid rgba(255,255,255,0.35);
+  transform: translate(-50%, -50%);
+  transition: transform 120ms ease-out;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+.live-tile .ptz-joystick-base:active .ptz-joystick-thumb { transition: none; }
+.live-tile .ptz-joystick-home {
+  width: 36px;
+  height: 36px;
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .live-tile .ptz-dpad { display: none; }
+  .live-tile .ptz-joystick { display: inline-flex; }
+  .live-tile .ptz { padding: 8px 10px; gap: 12px; }
+}
 .live-tile svg rect { fill: none; stroke: #e94560; stroke-width: 2; }
 .live-tile svg text { fill: #fff; font: 600 11px -apple-system, sans-serif; paint-order: stroke; stroke: rgba(0,0,0,0.7); stroke-width: 3; }
 .live-tile .ph { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.85rem; }
@@ -134,4 +181,8 @@ main { padding: 20px; max-width: 1100px; margin: 0 auto; }
   .topbar { padding: 10px 14px; }
   .nav a { padding: 6px; font-size: 0.85rem; }
   .device { grid-template-columns: 1fr max-content; row-gap: 4px; }
+  .live-tile .ptz { bottom: 10px; left: 10px; padding: 6px 8px; }
+  .live-tile .ptz-joystick-base { width: 80px; height: 80px; }
+  .live-tile .ptz-joystick-thumb { width: 32px; height: 32px; }
+  .live-tile .ptz-joystick-home { width: 32px; height: 32px; }
 }
