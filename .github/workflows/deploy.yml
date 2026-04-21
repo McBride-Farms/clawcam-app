@@ -1,6 +1,6 @@
 name: Deploy
 
-# Deploys to the self-hosted runner host (grunt-node1) on every push to main.
+# Deploys to the self-hosted runner's own host on every push to main.
 # Only runs on push (never pull_request), so untrusted fork code can't trigger it.
 on:
   push:
@@ -13,23 +13,25 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, grunt-node1]
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
       - name: Run deploy.sh (in-place on the runner host)
         working-directory: server
         env:
-          REMOTE: grunt@localhost
-          REMOTE_DIR: /home/grunt/clawcam-app
+          REMOTE: ${{ secrets.DEPLOY_SSH_TARGET }}
+          REMOTE_DIR: ${{ secrets.DEPLOY_DIR }}
           CLAWCAM_APP_TOKEN: ${{ secrets.CLAWCAM_APP_TOKEN }}
         run: bash deploy.sh
 
       - name: Restart service + smoke test
+        env:
+          REMOTE: ${{ secrets.DEPLOY_SSH_TARGET }}
         run: |
           # Routed through sshd so the user session / D-Bus env is set up for
           # `systemctl --user`; a bare runner step runs without that context.
-          ssh grunt@localhost "
+          ssh "$REMOTE" "
             systemctl --user restart clawcam-app
             for i in 1 2 3 4 5 6 7 8; do
               sleep 1
