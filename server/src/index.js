@@ -2,7 +2,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
-import { buildRouter } from "./api.js";
+import { buildRouter, requireAuth } from "./api.js";
 import { sseHandler } from "./sse.js";
 import { pruneOldEvents } from "./ingest.js";
 
@@ -15,12 +15,12 @@ app.set("trust proxy", true);
 
 app.use((req, _res, next) => {
   const t = Date.now();
-  const done = () => console.log(`${req.method} ${req.url} -> ${Date.now() - t}ms`);
+  const done = () => console.log(`${req.method} ${redactUrl(req.url)} -> ${Date.now() - t}ms`);
   req.on("end", done);
   next();
 });
 
-app.get("/api/stream", sseHandler);
+app.get("/api/stream", requireAuth, sseHandler);
 app.use(buildRouter());
 app.use(
   express.static(publicDir, {
@@ -53,3 +53,7 @@ setInterval(() => {
     console.error("prune error", e);
   }
 }, 3600 * 1000).unref();
+
+function redactUrl(url) {
+  return url.replace(/([?&]token=)[^&]+/i, "$1[redacted]");
+}

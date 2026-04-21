@@ -7,6 +7,7 @@ import { stmts } from "./db.js";
 import { ingestEvent } from "./ingest.js";
 
 const PTZ_PORT = 8091;
+const HOST_RE = /^[0-9a-zA-Z.:-]+$/;
 
 function probePtz(host, timeoutMs = 1000) {
   return new Promise((resolve) => {
@@ -19,6 +20,44 @@ function probePtz(host, timeoutMs = 1000) {
     sock.on("error", () => finish(false));
     sock.setTimeout(timeoutMs, () => { sock.destroy(); finish(false); });
   });
+}
+
+export function requireAuth(req, res, next) {
+  if (!config.token) return next();
+  if (presentedToken(req) !== config.token) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  return next();
+}
+
+function presentedToken(req) {
+  const h = req.headers.authorization || "";
+  if (h.startsWith("Bearer ")) return h.slice(7);
+  const cookie = req.headers.cookie || "";
+  for (const part of cookie.split(";")) {
+    const [k, ...rest] = part.trim().split("=");
+    if (k === "clawcam_token") {
+      try {
+        return decodeURIComponent(rest.join("="));
+      } catch {
+        return "";
+      }
+    }
+  }
+  return typeof req.query?.token === "string" ? req.query.token : "";
+}
+
+function requireHookAuth(req, res, next) {
+  if (!config.token) return next();
+  const h = req.headers.authorization || "";
+  const tok = h.startsWith("Bearer ") ? h.slice(7) : "";
+  if (tok !== config.token) return res.status(401).json({ error: "unauthorized" });
+  return next();
+}
+
+function registeredDevice(host) {
+  if (!HOST_RE.test(host)) return null;
+  return stmts.listDevices.all().find((d) => d.host === host || d.name === host) || null;
 }
 
 export function buildRouter() {
@@ -41,7 +80,7 @@ export function buildRouter() {
     });
   });
 
-  r.get("/api/streams", async (_req, res) => {
+  r.get("/api/streams", requireAuth, async (_req, res) => {
     try {
       const upstream = await fetch(`${config.mediamtxApi}/v3/paths/list`, {
         signal: AbortSignal.timeout(3000),
@@ -62,27 +101,23 @@ export function buildRouter() {
     }
   });
 
-  r.get("/api/devices", async (_req, res) => {
+  r.get("/api/devices", requireAuth, async (_req, res) => {
     const devices = stmts.listDevices.all();
     const probes = await Promise.all(devices.map((d) => probePtz(d.host)));
     devices.forEach((d, i) => { d.has_ptz = probes[i]; });
     res.json({ devices });
   });
 
-  r.post("/api/devices", express.json(), (req, res) => {
-    if (config.token) {
-      const h = req.headers.authorization || "";
-      const tok = h.startsWith("Bearer ") ? h.slice(7) : "";
-      if (tok !== config.token) return res.status(401).json({ error: "unauthorized" });
-    }
+  r.post("/api/devices", requireAuth, express.json(), (req, res) => {
     const { host, name } = req.body || {};
     if (!host || typeof host !== "string") return res.status(400).json({ error: "host required" });
+    if (!HOST_RE.test(host)) return res.status(400).json({ error: "bad host" });
     const now = Math.floor(Date.now() / 1000);
     stmts.registerDevice.run({ host, name: name || null, now });
     res.json({ ok: true });
   });
 
-  r.get("/api/events", (req, res) => {
+  r.get("/api/events", requireAuth, (req, res) => {
     const host = req.query.host ? String(req.query.host) : null;
     const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
     const offset = parseInt(req.query.offset || "0", 10);
@@ -92,7 +127,7 @@ export function buildRouter() {
     res.json({ events: rows, limit, offset });
   });
 
-  r.get("/api/events/:id", (req, res) => {
+  r.get("/api/events/:id", requireAuth, (req, res) => {
     const ev = stmts.getEvent.get(req.params.id);
     if (!ev) return res.status(404).json({ error: "not_found" });
     const phases = stmts.phasesForEvent.all(ev.event_id).map((p) => ({
@@ -104,12 +139,16 @@ export function buildRouter() {
     res.json({ event: ev, phases });
   });
 
-  r.get("/api/devices/:host/latest.jpg", async (req, res) => {
+  r.get("/api/devices/:host/latest.jpg", requireAuth, async (req, res) => {
     const host = req.params.host;
-    if (!/^[0-9a-zA-Z.:-]+$/.test(host)) return res.status(400).end();
+    const dev = registeredDevice(host);
+    if (!dev) return res.status(404).json({ error: "device not registered" });
     const port = parseInt(req.query.port || "8090", 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return res.status(400).json({ error: "bad port" });
+    }
     try {
-      const upstream = await fetch(`http://${host}:${port}/latest.jpg`, {
+      const upstream = await fetch(`http://${dev.host}:${port}/latest.jpg`, {
         signal: AbortSignal.timeout(4000),
       });
       if (!upstream.ok) return res.status(upstream.status).end();
@@ -122,10 +161,9 @@ export function buildRouter() {
     }
   });
 
-  r.post("/api/devices/:host/ptz", express.json(), async (req, res) => {
+  r.post("/api/devices/:host/ptz", requireAuth, express.json(), async (req, res) => {
     const host = req.params.host;
-    if (!/^[0-9a-zA-Z.:-]+$/.test(host)) return res.status(400).json({ error: "bad host" });
-    const dev = stmts.listDevices.all().find((d) => d.host === host);
+    const dev = registeredDevice(host);
     if (!dev) return res.status(404).json({ error: "device not registered" });
 
     const body = req.body || {};
@@ -139,7 +177,7 @@ export function buildRouter() {
     };
 
     try {
-      const upstream = await fetch(`http://${host}:${PTZ_PORT}/ptz`, {
+      const upstream = await fetch(`http://${dev.host}:${PTZ_PORT}/ptz`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -154,7 +192,7 @@ export function buildRouter() {
     }
   });
 
-  r.get("/media/:file", (req, res) => {
+  r.get("/media/:file", requireAuth, (req, res) => {
     const name = req.params.file;
     if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).end();
     const full = path.join(config.mediaDir, name);
@@ -167,24 +205,14 @@ export function buildRouter() {
     fs.createReadStream(full).pipe(res);
   });
 
-  r.post("/telemetry/clawcam", express.json({ limit: "512kb" }), (req, res) => {
-    if (config.token) {
-      const h = req.headers.authorization || "";
-      const tok = h.startsWith("Bearer ") ? h.slice(7) : "";
-      if (tok !== config.token) return res.status(401).json({ error: "unauthorized" });
-    }
+  r.post("/telemetry/clawcam", requireHookAuth, express.json({ limit: "512kb" }), (req, res) => {
     // Broadcast without persisting — telemetry is ephemeral.
     const { broadcast } = globalThis.__clawcamAppSse || {};
     if (broadcast) broadcast("telemetry", req.body || {});
     res.json({ ok: true });
   });
 
-  r.post("/hooks/clawcam", express.json({ limit: `${config.maxPayloadMb}mb` }), (req, res) => {
-    if (config.token) {
-      const h = req.headers.authorization || "";
-      const tok = h.startsWith("Bearer ") ? h.slice(7) : "";
-      if (tok !== config.token) return res.status(401).json({ error: "unauthorized" });
-    }
+  r.post("/hooks/clawcam", requireHookAuth, express.json({ limit: `${config.maxPayloadMb}mb` }), (req, res) => {
     try {
       const result = ingestEvent(req.body || {});
       res.json({ ok: true, ...result });

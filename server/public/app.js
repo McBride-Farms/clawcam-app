@@ -27,8 +27,61 @@ function el(html) {
   return t.content.firstElementChild;
 }
 
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[ch]));
+}
+
+function cssToken(v) {
+  return String(v ?? "").replace(/[^A-Za-z0-9_-]/g, "");
+}
+
+function num(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function boxMarkup(p, tx = 6, ty = 22) {
+  const left = num(p.left);
+  const top = num(p.top);
+  const right = num(p.right);
+  const bottom = num(p.bottom);
+  const w = Math.max(0, right - left);
+  const h = Math.max(0, bottom - top);
+  const score = num(p.score);
+  const label = `${p.class ?? ""} ${(score * 100).toFixed(0)}%`;
+  return `<g><rect x="${left}" y="${top}" width="${w}" height="${h}"/><text x="${left + tx}" y="${top + ty}">${esc(label)}</text></g>`;
+}
+
+function setAuthToken(token) {
+  localStorage.setItem("clawcam_token", token);
+  document.cookie = `clawcam_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
+}
+
+function getAuthToken() {
+  return localStorage.getItem("clawcam_token") || "";
+}
+
 async function api(path) {
-  const r = await fetch(path);
+  const headers = {};
+  const token = getAuthToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let r = await fetch(path, { headers, credentials: "same-origin" });
+  if (r.status === 401) {
+    const entered = prompt("Shared clawcam token");
+    if (entered) {
+      setAuthToken(entered);
+      r = await fetch(path, {
+        headers: { Authorization: `Bearer ${entered}` },
+        credentials: "same-origin",
+      });
+    }
+  }
   if (!r.ok) throw new Error(`${path}: ${r.status}`);
   return r.json();
 }
@@ -39,7 +92,7 @@ function route() {
     a.classList.toggle("active", hash.startsWith("#/" + a.dataset.route));
   });
   const [_, page, arg] = hash.split("/");
-  if (page === "event" && arg) return renderDetail(arg);
+  if (page === "event" && arg) return renderDetail(decodeURIComponent(arg));
   if (page === "devices") return renderDevices();
   if (page === "settings") return renderSettings();
   if (page === "live") return renderLive();
@@ -53,6 +106,7 @@ async function sendPtz(host, body) {
     await fetch(`/api/devices/${encodeURIComponent(host)}/ptz`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
       body: JSON.stringify(body),
     });
   } catch {}
@@ -258,12 +312,12 @@ async function renderLive() {
     const name = d.name || d.host;
     const stream = streamByName.get(name);
     const tile = el(`
-      <div class="live-tile" data-host="${d.host}" data-name="${name}">
+      <div class="live-tile" data-host="${esc(d.host)}" data-name="${esc(name)}">
         <video muted autoplay playsinline></video>
         <img class="snapshot" alt="last snapshot" hidden>
         <div class="ph" hidden>offline</div>
         <svg class="overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
-        <div class="label"><span class="dot dead"></span><span>${name}</span></div>
+        <div class="label"><span class="dot dead"></span><span>${esc(name)}</span></div>
         <div class="age">—</div>
         <div class="ptz" data-stop-focus title="Pan / Tilt / Zoom">
           <div class="ptz-joystick" aria-label="Pan/tilt joystick">
@@ -367,7 +421,7 @@ async function loadLastSnapshot(device, imgEl, phEl, ageEl) {
     const { events } = await api(`/api/events?host=${encodeURIComponent(device.host)}&limit=1`);
     const withImage = events.find((e) => e.image_file);
     if (withImage) {
-      imgEl.src = `/media/${withImage.image_file}`;
+      imgEl.src = `/media/${encodeURIComponent(withImage.image_file)}`;
       imgEl.hidden = false;
       phEl.hidden = true;
       ageEl.textContent = `last ${fmtTime(withImage.started_epoch)}`;
@@ -443,7 +497,7 @@ async function loadDeviceOptions(sel) {
   const { devices } = await api("/api/devices");
   state.devices = devices;
   sel.innerHTML = `<option value="">All devices</option>` +
-    devices.map((d) => `<option value="${d.host}" ${d.host === state.filterHost ? "selected" : ""}>${d.name || d.host}</option>`).join("");
+    devices.map((d) => `<option value="${esc(d.host)}" ${d.host === state.filterHost ? "selected" : ""}>${esc(d.name || d.host)}</option>`).join("");
 }
 
 async function loadEvents() {
@@ -470,17 +524,17 @@ function renderEventList() {
 function eventCard(e) {
   const classes = (e.classes || "").split(",").filter(Boolean);
   const card = el(`
-    <a href="#/event/${e.event_id}" class="event">
+    <a href="#/event/${encodeURIComponent(e.event_id)}" class="event">
       ${e.image_file
-        ? `<img class="thumb" src="/media/${e.image_file}" alt="event" loading="lazy">`
+        ? `<img class="thumb" src="/media/${encodeURIComponent(e.image_file)}" alt="event" loading="lazy">`
         : `<div class="thumb empty">(no image)</div>`}
       <div class="meta">
         <div class="row1">
-          <span class="host" title="${e.host}">${e.host}</span>
-          <span class="status-pill ${e.status}">${e.status}</span>
+          <span class="host" title="${esc(e.host)}">${esc(e.host)}</span>
+          <span class="status-pill ${cssToken(e.status)}">${esc(e.status)}</span>
         </div>
         <div class="when">${fmtTime(e.started_epoch)}${e.duration_secs ? ` · ${e.duration_secs.toFixed(1)}s` : ""}</div>
-        <div class="classes">${classes.map((c) => `<span class="tag">${c}</span>`).join("") || `<span class="mute">—</span>`}</div>
+        <div class="classes">${classes.map((c) => `<span class="tag">${esc(c)}</span>`).join("") || `<span class="mute">—</span>`}</div>
       </div>
     </a>
   `);
@@ -503,7 +557,7 @@ async function renderDetail(id) {
 
     if (event.image_file) {
       const wrap = el(`<div class="hero-wrap"></div>`);
-      const img = el(`<img class="hero" src="/media/${event.image_file}" alt="event">`);
+      const img = el(`<img class="hero" src="/media/${encodeURIComponent(event.image_file)}" alt="event">`);
       const svg = el(`<svg class="hero-overlay" preserveAspectRatio="none"></svg>`);
       wrap.appendChild(img);
       wrap.appendChild(svg);
@@ -513,30 +567,25 @@ async function renderDetail(id) {
         const W = img.naturalWidth || 1920;
         const H = img.naturalHeight || 1080;
         svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-        svg.innerHTML = preds.map((p) => {
-          const w = p.right - p.left;
-          const h = p.bottom - p.top;
-          const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
-          return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}"/><text x="${p.left + 6}" y="${p.top + 22}">${label}</text></g>`;
-        }).join("");
+        svg.innerHTML = preds.map((p) => boxMarkup(p)).join("");
       };
       if (img.complete) drawBoxes(); else img.addEventListener("load", drawBoxes, { once: true });
     }
 
     body.appendChild(el(`
       <div class="meta-grid">
-        <div class="k">Device</div><div>${event.host}</div>
+        <div class="k">Device</div><div>${esc(event.host)}</div>
         <div class="k">Started</div><div>${new Date(event.started_epoch * 1000).toLocaleString()}</div>
         <div class="k">Duration</div><div>${event.duration_secs ? event.duration_secs.toFixed(1) + "s" : "—"}</div>
-        <div class="k">Status</div><div>${event.status}</div>
-        <div class="k">Event ID</div><div><code>${event.event_id}</code></div>
+        <div class="k">Status</div><div>${esc(event.status)}</div>
+        <div class="k">Event ID</div><div><code>${esc(event.event_id)}</code></div>
       </div>
     `));
 
     if (event.clip_file) {
       body.appendChild(el(`<h2>Clip</h2>`));
       const vidWrap = el(`<div class="hero-wrap clip-wrap"></div>`);
-      const vid = el(`<video controls playsinline preload="metadata" src="/media/${event.clip_file}"></video>`);
+      const vid = el(`<video controls playsinline preload="metadata" src="/media/${encodeURIComponent(event.clip_file)}"></video>`);
       const vsvg = el(`<svg class="hero-overlay" preserveAspectRatio="none"></svg>`);
       vidWrap.appendChild(vid);
       vidWrap.appendChild(vsvg);
@@ -557,12 +606,7 @@ async function renderDetail(id) {
           const H = vid.videoHeight || 1080;
           vsvg.setAttribute("viewBox", `0 0 ${W} ${H}`);
           if (!sample || bestDiff > 0.6) { vsvg.innerHTML = ""; return; }
-          vsvg.innerHTML = (sample.boxes || []).map((p) => {
-            const w = p.right - p.left;
-            const h = p.bottom - p.top;
-            const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
-            return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}"/><text x="${p.left + 6}" y="${p.top + 22}">${label}</text></g>`;
-          }).join("");
+          vsvg.innerHTML = (sample.boxes || []).map((p) => boxMarkup(p)).join("");
         };
         vid.addEventListener("timeupdate", () => drawAt(vid.currentTime));
         vid.addEventListener("seeked", () => drawAt(vid.currentTime));
@@ -573,7 +617,7 @@ async function renderDetail(id) {
     if (preFiles.length) {
       body.appendChild(el(`<h2>Pre-detection frames</h2>`));
       const strip = el(`<div class="frame-strip"></div>`);
-      for (const f of preFiles) strip.appendChild(el(`<img src="/media/${f}" loading="lazy">`));
+      for (const f of preFiles) strip.appendChild(el(`<img src="/media/${encodeURIComponent(f)}" loading="lazy">`));
       body.appendChild(strip);
     }
 
@@ -582,8 +626,8 @@ async function renderDetail(id) {
       for (const t of tracks) {
         body.appendChild(el(`
           <div class="track">
-            <span class="cls">${t.class}</span>
-            <span>id=${t.track_id}</span>
+            <span class="cls">${esc(t.class)}</span>
+            <span>id=${esc(t.track_id)}</span>
             <span>dur=${(t.duration_secs || 0).toFixed(1)}s</span>
             <span>motion=${(t.movement_px || 0).toFixed(0)}px</span>
             ${t.is_stationary ? `<span>stationary</span>` : ""}
@@ -596,7 +640,7 @@ async function renderDetail(id) {
     for (const p of phases) {
       const box = el(`
         <div class="phase">
-          <div class="ph-title">${p.phase}${p.detail ? ` · ${p.detail}` : ""} <span class="mute" style="color:var(--muted); font-weight:normal">${fmtTime(p.epoch)}</span></div>
+          <div class="ph-title">${esc(p.phase)}${p.detail ? ` · ${esc(p.detail)}` : ""} <span class="mute" style="color:var(--muted); font-weight:normal">${fmtTime(p.epoch)}</span></div>
           <pre></pre>
         </div>
       `);
@@ -604,7 +648,7 @@ async function renderDetail(id) {
       body.appendChild(box);
     }
   } catch (e) {
-    body.innerHTML = `<div class="empty-state">Failed to load: ${e.message}</div>`;
+    body.innerHTML = `<div class="empty-state">Failed to load: ${esc(e.message)}</div>`;
   }
 }
 
@@ -622,8 +666,8 @@ async function renderDevices() {
     list.appendChild(el(`
       <div class="device">
         <div>
-          <div class="host">${d.name || d.host}</div>
-          <div class="mute">${d.host}</div>
+          <div class="host">${esc(d.name || d.host)}</div>
+          <div class="mute">${esc(d.host)}</div>
         </div>
         <div class="mute">${d.event_count} events</div>
         <div class="mute">first: ${fmtTime(d.first_seen)}</div>
@@ -707,15 +751,12 @@ function estimateVideoDelayMs(entry) {
 function paintOverlay(tile, t) {
   const svg = tile.querySelector("svg.overlay");
   if (!svg) return;
-  const W = t.width, H = t.height;
+  const W = num(t.width);
+  const H = num(t.height);
+  if (!W || !H) return;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const preds = t.predictions || [];
-  svg.innerHTML = preds.map((p) => {
-    const w = p.right - p.left;
-    const h = p.bottom - p.top;
-    const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
-    return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}" /><text x="${p.left + 4}" y="${p.top + 14}">${label}</text></g>`;
-  }).join("");
+  svg.innerHTML = preds.map((p) => boxMarkup(p, 4, 14)).join("");
   // Clear the overlay if no fresh paint arrives within 1.5 s.
   if (tile._overlayTimer) clearTimeout(tile._overlayTimer);
   tile._overlayTimer = setTimeout(() => { svg.innerHTML = ""; }, 1500);
@@ -724,8 +765,8 @@ function paintOverlay(tile, t) {
 function showFlash(ev) {
   const existing = document.querySelector(".flash");
   if (existing) existing.remove();
-  const f = el(`<div class="flash">new ${ev.phase} · ${ev.host}</div>`);
-  f.onclick = () => { location.hash = `#/event/${ev.event_id}`; f.remove(); };
+  const f = el(`<div class="flash">new ${esc(ev.phase)} · ${esc(ev.host)}</div>`);
+  f.onclick = () => { location.hash = `#/event/${encodeURIComponent(ev.event_id)}`; f.remove(); };
   document.body.appendChild(f);
   setTimeout(() => f.remove(), 5000);
 }
