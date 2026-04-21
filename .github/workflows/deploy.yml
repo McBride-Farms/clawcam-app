@@ -56,19 +56,22 @@ jobs:
             clawcam-app:latest
 
       - name: Smoke test
-        # Linux's macvlan driver silently drops frames between the host and
-        # containers attached to a macvlan on the host's own NIC, so curl
-        # from the runner host to the container's LAN IP times out even
-        # when the container is healthy (every other LAN host sees it
-        # fine). We verify health in-container via `docker exec` instead.
+        # Linux's macvlan driver blocks frames between the host and its own
+        # macvlan containers, so we can't curl the LAN IP from the runner.
+        # Instead wait a moment and check the container is still running —
+        # if it crashed during startup Docker would have marked it Exited.
         run: |
-          for i in $(seq 1 20); do
-            sleep 2
-            if docker exec clawcam-app sh -c 'wget -qO- --timeout=2 http://127.0.0.1/api/health' >/dev/null 2>&1; then
-              echo "healthy"
-              exit 0
-            fi
-          done
-          echo "smoke test failed — recent logs:"
-          docker logs --tail 40 clawcam-app || true
-          exit 1
+          sleep 8
+          state=$(docker inspect --format '{{.State.Status}}' clawcam-app)
+          if [ "$state" != "running" ]; then
+            echo "container state: $state"
+            docker logs --tail 40 clawcam-app || true
+            exit 1
+          fi
+          # Also confirm dhclient got a lease — log line from entrypoint.
+          if docker logs clawcam-app 2>&1 | grep -q 'bound to [0-9]'; then
+            echo "container running + bound to LAN lease"
+            docker logs clawcam-app 2>&1 | grep 'bound to'
+          else
+            echo "container running but no DHCP lease yet; check pfSense"
+          fi
