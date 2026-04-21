@@ -71,17 +71,7 @@ async function api(path) {
   const headers = {};
   const token = getAuthToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  let r = await fetch(path, { headers, credentials: "same-origin" });
-  if (r.status === 401) {
-    const entered = prompt("Shared clawcam token");
-    if (entered) {
-      setAuthToken(entered);
-      r = await fetch(path, {
-        headers: { Authorization: `Bearer ${entered}` },
-        credentials: "same-origin",
-      });
-    }
-  }
+  const r = await fetch(path, { headers, credentials: "same-origin" });
   if (!r.ok) throw new Error(`${path}: ${r.status}`);
   return r.json();
 }

@@ -18,7 +18,6 @@ rsync -az --delete \
 echo "==> writing ${REMOTE_DIR}/server/.env"
 ssh "$REMOTE" "cat > ${REMOTE_DIR_Q}/server/.env && chmod 600 ${REMOTE_DIR_Q}/server/.env" <<EOF
 CLAWCAM_APP_DATA_DIR=${REMOTE_DIR}/data
-${TOKEN:+CLAWCAM_APP_TOKEN=$TOKEN}
 EOF
 
 echo "==> installing npm deps"
