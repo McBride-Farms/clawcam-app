@@ -382,8 +382,17 @@ function applyTileStream(name, stream) {
     snap.hidden = true; ph.hidden = true; video.hidden = false;
     const url = `${liveState.cfg.hls_base}/${encodeURIComponent(name)}/index.m3u8`;
     const hls = attachHls(video, url,
-      () => { dot.classList.remove("dead"); age.textContent = "live"; },
-      () => { dot.classList.add("dead"); age.textContent = "reconnecting…"; });
+      () => {
+        dot.classList.remove("dead", "reconnecting");
+        age.textContent = "live";
+        age.classList.remove("reconnecting");
+      },
+      () => {
+        dot.classList.add("reconnecting");
+        dot.classList.remove("dead");
+        age.textContent = "reconnecting…";
+        age.classList.add("reconnecting");
+      });
     entry.hls = hls;
   } else {
     if (entry.live) {
@@ -425,6 +434,9 @@ async function loadLastSnapshot(device, imgEl, phEl, ageEl) {
 }
 
 function attachHls(video, url, onPlay, onFail) {
+  // Wraps the raw hls.js attach with exponential backoff reconnection so a
+  // transient stream blip (mediamtx restart, wifi glitch) recovers on its
+  // own. Returns a handle with destroy() that stops the retry loop.
   const applyAspect = () => {
     const tile = video.closest(".live-tile");
     if (!tile || !video.videoWidth || !video.videoHeight) return;
@@ -435,22 +447,56 @@ function attachHls(video, url, onPlay, onFail) {
   video.addEventListener("loadedmetadata", applyAspect);
   video.addEventListener("resize", applyAspect);
 
-  if (window.Hls && window.Hls.isSupported()) {
-    const hls = new Hls({ liveDurationInfinity: true, lowLatencyMode: true });
-    hls.loadSource(url);
-    hls.attachMedia(video);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().then(onPlay).catch(onFail));
-    hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) onFail(); });
-    liveState.hlsInstances.push(hls);
-    return hls;
-  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-    video.src = url;
-    video.addEventListener("loadeddata", onPlay);
-    video.addEventListener("error", onFail);
-    return { destroy: () => { video.src = ""; } };
-  }
-  onFail();
-  return null;
+  let hls = null;
+  let retryTimer = null;
+  let retryDelayMs = 1000;
+  let stopped = false;
+
+  const fail = () => {
+    if (stopped) return;
+    onFail();
+    try { hls?.destroy?.(); } catch {}
+    hls = null;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      if (stopped) return;
+      retryDelayMs = Math.min(retryDelayMs * 2, 15000);
+      attach();
+    }, retryDelayMs);
+  };
+
+  const attach = () => {
+    if (stopped) return;
+    if (window.Hls && window.Hls.isSupported()) {
+      hls = new Hls({ liveDurationInfinity: true, lowLatencyMode: true });
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () =>
+        video.play().then(() => {
+          retryDelayMs = 1000; // reset backoff on successful play
+          onPlay();
+        }).catch(fail)
+      );
+      hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail(); });
+      liveState.hlsInstances.push(hls);
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = url;
+      video.addEventListener("loadeddata", () => { retryDelayMs = 1000; onPlay(); });
+      video.addEventListener("error", fail);
+    } else {
+      fail();
+    }
+  };
+
+  attach();
+
+  return {
+    destroy: () => {
+      stopped = true;
+      clearTimeout(retryTimer);
+      try { hls?.destroy?.(); } catch {}
+    },
+  };
 }
 
 function stopLive() {
@@ -683,15 +729,31 @@ function connectStream() {
   if (state.stream) state.stream.close();
   const es = new EventSource("/api/stream");
   state.stream = es;
+  // EventSource auto-reconnects on its own, but we want to distinguish a
+  // transient blip from a hard outage. Show "reconnecting…" immediately on
+  // error, then escalate to "disconnected" if we can't re-open within 15s.
+  let sseConnected = false;
+  let sseDisconnectTimer = null;
   es.onopen = () => {
-    liveDot.classList.remove("off");
+    sseConnected = true;
+    if (sseDisconnectTimer) { clearTimeout(sseDisconnectTimer); sseDisconnectTimer = null; }
+    liveDot.classList.remove("off", "lost");
     liveDot.classList.add("on");
     liveText.textContent = "live";
   };
   es.onerror = () => {
+    sseConnected = false;
     liveDot.classList.add("off");
     liveDot.classList.remove("on");
     liveText.textContent = "reconnecting…";
+    if (!sseDisconnectTimer) {
+      sseDisconnectTimer = setTimeout(() => {
+        if (!sseConnected) {
+          liveDot.classList.add("lost");
+          liveText.textContent = "disconnected";
+        }
+      }, 15000);
+    }
   };
   es.addEventListener("event", (m) => {
     let data;

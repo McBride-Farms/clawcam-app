@@ -30,6 +30,10 @@ button:hover { background: var(--border); }
 .status { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--muted); }
 .live { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .live.on { background: var(--good); box-shadow: 0 0 8px var(--good); animation: pulse 2s infinite; }
+/* Transient "reconnecting…" — SSE saw an error, auto-reconnect in flight. */
+.live.off { background: #d6b85a; box-shadow: 0 0 8px #d6b85a; animation: pulse 1s infinite; }
+/* Escalated "disconnected" — >15s without an open; server likely unreachable. */
+.live.lost { background: var(--bad); box-shadow: 0 0 10px var(--bad); animation: none; }
 @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
 
 main { padding: 20px; max-width: 1100px; margin: 0 auto; }
@@ -171,6 +175,8 @@ main { padding: 20px; max-width: 1100px; margin: 0 auto; }
 .live-tile .ph { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.85rem; }
 .live-tile .label { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.65); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; color: var(--text); display: flex; gap: 6px; align-items: center; }
 .live-tile .label .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 6px var(--good); }
+.live-tile .label .dot.reconnecting { background: #d6b85a; box-shadow: 0 0 8px #d6b85a; animation: pulse 1s infinite; }
+.live-tile .age.reconnecting { color: #d6b85a; animation: pulse 1s infinite; }
 .live-tile .label .dot.dead { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
 .live-tile .age { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.65); padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; color: var(--muted); }
 .live-tile.focus { grid-column: 1 / -1; }
