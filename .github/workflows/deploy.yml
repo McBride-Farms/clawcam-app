@@ -1,0 +1,33 @@
+name: Deploy
+
+# Deploys to the self-hosted runner host (grunt-node1) on every push to main.
+# Only runs on push (never pull_request), so untrusted fork code can't trigger it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, grunt-node1]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run deploy.sh (in-place on the runner host)
+        working-directory: server
+        env:
+          REMOTE: grunt@localhost
+          REMOTE_DIR: /home/grunt/clawcam-app
+          CLAWCAM_APP_TOKEN: ${{ secrets.CLAWCAM_APP_TOKEN }}
+        run: bash deploy.sh
+
+      - name: Restart service
+        run: |
+          systemctl --user restart clawcam-app || true
+          sleep 2
+          systemctl --user is-active clawcam-app
+          curl -fsS http://127.0.0.1:8080/api/health
