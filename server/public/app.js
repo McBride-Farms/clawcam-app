@@ -1,0 +1,563 @@
+const state = {
+  events: [],
+  devices: [],
+  filterHost: "",
+  sinceHours: 168,
+  stream: null,
+};
+
+const view = document.getElementById("view");
+const liveDot = document.getElementById("live-dot");
+const liveText = document.getElementById("live-text");
+
+function fmtTime(epoch) {
+  if (!epoch) return "";
+  const d = new Date(epoch * 1000);
+  const now = Date.now();
+  const diff = (now - d.getTime()) / 1000;
+  if (diff < 60) return `${Math.floor(diff)}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return d.toLocaleString();
+}
+
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${path}: ${r.status}`);
+  return r.json();
+}
+
+function route() {
+  const hash = location.hash || "#/events";
+  document.querySelectorAll(".nav a").forEach((a) => {
+    a.classList.toggle("active", hash.startsWith("#/" + a.dataset.route));
+  });
+  const [_, page, arg] = hash.split("/");
+  if (page === "event" && arg) return renderDetail(arg);
+  if (page === "devices") return renderDevices();
+  if (page === "settings") return renderSettings();
+  if (page === "live") return renderLive();
+  return renderEvents();
+}
+
+let liveState = { hlsInstances: [], pollTimer: null, tiles: new Map(), cfg: null };
+
+async function sendPtz(host, body) {
+  try {
+    await fetch(`/api/devices/${encodeURIComponent(host)}/ptz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {}
+}
+
+function wireTilePtz(tile, host) {
+  const btns = tile.querySelectorAll(".ptz button[data-ptz]");
+  let busy = false;
+  btns.forEach((b) => {
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (busy) return;
+      const action = b.dataset.ptz;
+      const body =
+        action === "home"    ? { home: true } :
+        action === "up"      ? { tilt: +1 } :
+        action === "down"    ? { tilt: -1 } :
+        action === "left"    ? { pan: -1 } :
+        action === "right"   ? { pan: +1 } :
+        action === "zoom-in" ? { zoom: +4 } :
+        action === "zoom-out"? { zoom: -4 } : null;
+      if (!body) return;
+      busy = true;
+      btns.forEach((x) => (x.disabled = true));
+      try { await sendPtz(host, body); }
+      finally { busy = false; btns.forEach((x) => (x.disabled = false)); }
+    });
+  });
+}
+
+async function renderLive() {
+  stopLive();
+  view.innerHTML = "";
+  view.appendChild(document.getElementById("tpl-live").content.cloneNode(true));
+  const grid = document.getElementById("live-grid");
+  const focusBtn = document.getElementById("live-fullscreen");
+  const cadenceSel = document.querySelector(".cadence");
+  if (cadenceSel) cadenceSel.style.display = "none";
+
+  let devices = [], streams = [], cfg = null;
+  try {
+    [devices, streams, cfg] = await Promise.all([
+      api("/api/devices").then((r) => r.devices).catch(() => []),
+      api("/api/streams").then((r) => r.streams).catch(() => []),
+      api("/api/config").catch(() => ({ hls_base: `${location.origin.replace(/:\d+$/, "")}:8888` })),
+    ]);
+  } catch {}
+  liveState.cfg = cfg;
+
+  if (!devices.length) {
+    grid.innerHTML = `<div class="empty-state">No devices yet. Register a camera to watch it here.</div>`;
+    return;
+  }
+
+  const streamByName = new Map(streams.map((s) => [s.name, s]));
+  liveState.tiles.clear();
+
+  for (const d of devices) {
+    const name = d.name || d.host;
+    const stream = streamByName.get(name);
+    const tile = el(`
+      <div class="live-tile" data-host="${d.host}" data-name="${name}">
+        <video muted autoplay playsinline></video>
+        <img class="snapshot" alt="last snapshot" hidden>
+        <div class="ph" hidden>offline</div>
+        <svg class="overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+        <div class="label"><span class="dot dead"></span><span>${name}</span></div>
+        <div class="age">—</div>
+        <div class="ptz" data-stop-focus title="Pan / Tilt / Zoom">
+          <div class="ptz-dpad">
+            <button class="ptz-empty" tabindex="-1"></button>
+            <button data-ptz="up" title="Tilt up">▲</button>
+            <button class="ptz-empty" tabindex="-1"></button>
+            <button data-ptz="left" title="Pan left">◀</button>
+            <button class="ptz-home" data-ptz="home" title="Re-center">⌂</button>
+            <button data-ptz="right" title="Pan right">▶</button>
+            <button class="ptz-empty" tabindex="-1"></button>
+            <button data-ptz="down" title="Tilt down">▼</button>
+            <button class="ptz-empty" tabindex="-1"></button>
+          </div>
+          <div class="ptz-zoom">
+            <button data-ptz="zoom-in" title="Zoom in">+</button>
+            <span class="ptz-z-label">zoom</span>
+            <button data-ptz="zoom-out" title="Zoom out">−</button>
+          </div>
+        </div>
+      </div>
+    `);
+    tile.addEventListener("click", (e) => {
+      if (e.target.closest("[data-stop-focus]")) return;
+      document.querySelectorAll(".live-tile").forEach((t) => t.classList.remove("focus"));
+      tile.classList.toggle("focus");
+    });
+    if (d.has_ptz) {
+      wireTilePtz(tile, d.host);
+    } else {
+      tile.querySelector(".ptz")?.remove();
+    }
+    grid.appendChild(tile);
+    liveState.tiles.set(name, { tile, device: d, hls: null, live: false });
+    applyTileStream(name, stream);
+  }
+
+  focusBtn.onclick = () => {
+    const first = grid.querySelector(".live-tile");
+    if (first) first.classList.toggle("focus");
+  };
+
+  // Poll streams list so cameras reattach automatically when they come back.
+  const tick = async () => {
+    try {
+      const { streams } = await api("/api/streams");
+      const byName = new Map(streams.map((s) => [s.name, s]));
+      for (const [name] of liveState.tiles) applyTileStream(name, byName.get(name));
+    } catch {}
+  };
+  liveState.pollTimer = setInterval(tick, 5000);
+}
+
+function applyTileStream(name, stream) {
+  const entry = liveState.tiles.get(name);
+  if (!entry) return;
+  const { tile, device } = entry;
+  const video = tile.querySelector("video");
+  const snap = tile.querySelector(".snapshot");
+  const ph = tile.querySelector(".ph");
+  const dot = tile.querySelector(".label .dot");
+  const age = tile.querySelector(".age");
+
+  if (stream?.ready) {
+    if (entry.live) return; // already attached
+    entry.live = true;
+    snap.hidden = true; ph.hidden = true; video.hidden = false;
+    const url = `${liveState.cfg.hls_base}/${encodeURIComponent(name)}/index.m3u8`;
+    const hls = attachHls(video, url,
+      () => { dot.classList.remove("dead"); age.textContent = "live"; },
+      () => { dot.classList.add("dead"); age.textContent = "reconnecting…"; });
+    entry.hls = hls;
+  } else {
+    if (entry.live) {
+      try { entry.hls?.destroy?.(); } catch {}
+      entry.hls = null; entry.live = false;
+    }
+    video.hidden = true;
+    dot.classList.add("dead");
+    age.textContent = "offline";
+    // Try live JPEG (frame proxy). If that fails, show last event snapshot.
+    const jpegUrl = `/api/devices/${encodeURIComponent(device.host)}/latest.jpg?t=${Date.now()}`;
+    snap.hidden = false; ph.hidden = true;
+    snap.onload = () => { age.textContent = "jpeg"; ph.hidden = true; };
+    snap.onerror = () => {
+      snap.onerror = null;
+      snap.onload = null;
+      loadLastSnapshot(device, snap, ph, age);
+    };
+    snap.src = jpegUrl;
+  }
+}
+
+async function loadLastSnapshot(device, imgEl, phEl, ageEl) {
+  try {
+    const { events } = await api(`/api/events?host=${encodeURIComponent(device.host)}&limit=1`);
+    const withImage = events.find((e) => e.image_file);
+    if (withImage) {
+      imgEl.src = `/media/${withImage.image_file}`;
+      imgEl.hidden = false;
+      phEl.hidden = true;
+      ageEl.textContent = `last ${fmtTime(withImage.started_epoch)}`;
+      return;
+    }
+  } catch {}
+  imgEl.hidden = true;
+  phEl.hidden = false;
+  phEl.textContent = "offline · no snapshot";
+  ageEl.textContent = "offline";
+}
+
+function attachHls(video, url, onPlay, onFail) {
+  const applyAspect = () => {
+    const tile = video.closest(".live-tile");
+    if (!tile || !video.videoWidth || !video.videoHeight) return;
+    const ratio = video.videoWidth / video.videoHeight;
+    tile.classList.toggle("portrait", ratio < 1);
+    video.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+  };
+  video.addEventListener("loadedmetadata", applyAspect);
+  video.addEventListener("resize", applyAspect);
+
+  if (window.Hls && window.Hls.isSupported()) {
+    const hls = new Hls({ liveDurationInfinity: true, lowLatencyMode: true });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().then(onPlay).catch(onFail));
+    hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) onFail(); });
+    liveState.hlsInstances.push(hls);
+    return hls;
+  } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = url;
+    video.addEventListener("loadeddata", onPlay);
+    video.addEventListener("error", onFail);
+    return { destroy: () => { video.src = ""; } };
+  }
+  onFail();
+  return null;
+}
+
+function stopLive() {
+  for (const h of liveState.hlsInstances) {
+    try { h.destroy(); } catch {}
+  }
+  liveState.hlsInstances = [];
+  if (liveState.pollTimer) clearInterval(liveState.pollTimer);
+  liveState.pollTimer = null;
+  liveState.tiles?.clear();
+}
+
+
+async function renderEvents() {
+  view.innerHTML = "";
+  view.appendChild(document.getElementById("tpl-events").content.cloneNode(true));
+  const hostSel = document.getElementById("filter-host");
+  const sinceSel = document.getElementById("filter-since");
+  document.getElementById("refresh").onclick = () => loadEvents();
+  hostSel.addEventListener("change", () => {
+    state.filterHost = hostSel.value;
+    loadEvents();
+  });
+  sinceSel.addEventListener("change", () => {
+    state.sinceHours = parseInt(sinceSel.value, 10);
+    loadEvents();
+  });
+  sinceSel.value = String(state.sinceHours);
+  await loadDeviceOptions(hostSel);
+  await loadEvents();
+}
+
+async function loadDeviceOptions(sel) {
+  const { devices } = await api("/api/devices");
+  state.devices = devices;
+  sel.innerHTML = `<option value="">All devices</option>` +
+    devices.map((d) => `<option value="${d.host}" ${d.host === state.filterHost ? "selected" : ""}>${d.name || d.host}</option>`).join("");
+}
+
+async function loadEvents() {
+  const params = new URLSearchParams();
+  if (state.filterHost) params.set("host", state.filterHost);
+  params.set("since_hours", String(state.sinceHours));
+  params.set("limit", "100");
+  const { events } = await api(`/api/events?${params}`);
+  state.events = events;
+  renderEventList();
+}
+
+function renderEventList() {
+  const list = document.getElementById("events-list");
+  if (!list) return;
+  if (!state.events.length) {
+    list.innerHTML = `<div class="empty-state">No events yet. Point a clawcam webhook at this server to see detections here.</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  for (const e of state.events) list.appendChild(eventCard(e));
+}
+
+function eventCard(e) {
+  const classes = (e.classes || "").split(",").filter(Boolean);
+  const card = el(`
+    <a href="#/event/${e.event_id}" class="event">
+      ${e.image_file
+        ? `<img class="thumb" src="/media/${e.image_file}" alt="event" loading="lazy">`
+        : `<div class="thumb empty">(no image)</div>`}
+      <div class="meta">
+        <div class="row1">
+          <span class="host" title="${e.host}">${e.host}</span>
+          <span class="status-pill ${e.status}">${e.status}</span>
+        </div>
+        <div class="when">${fmtTime(e.started_epoch)}${e.duration_secs ? ` · ${e.duration_secs.toFixed(1)}s` : ""}</div>
+        <div class="classes">${classes.map((c) => `<span class="tag">${c}</span>`).join("") || `<span class="mute">—</span>`}</div>
+      </div>
+    </a>
+  `);
+  return card;
+}
+
+async function renderDetail(id) {
+  view.innerHTML = "";
+  const node = document.getElementById("tpl-detail").content.cloneNode(true);
+  view.appendChild(node);
+  const body = document.getElementById("detail-body");
+  body.innerHTML = `<div class="empty-state">Loading…</div>`;
+  try {
+    const { event, phases } = await api(`/api/events/${encodeURIComponent(id)}`);
+    body.innerHTML = "";
+    const startPayload = phases.find((p) => p.phase === "start")?.payload;
+    const endPayload = phases.find((p) => p.phase === "end")?.payload;
+    const preFiles = (startPayload?.pre_frame_files) || [];
+    const tracks = (endPayload?.tracks || startPayload?.tracks || []);
+
+    if (event.image_file) {
+      const wrap = el(`<div class="hero-wrap"></div>`);
+      const img = el(`<img class="hero" src="/media/${event.image_file}" alt="event">`);
+      const svg = el(`<svg class="hero-overlay" preserveAspectRatio="none"></svg>`);
+      wrap.appendChild(img);
+      wrap.appendChild(svg);
+      body.appendChild(wrap);
+      const preds = startPayload?.predictions || [];
+      const drawBoxes = () => {
+        const W = img.naturalWidth || 1920;
+        const H = img.naturalHeight || 1080;
+        svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+        svg.innerHTML = preds.map((p) => {
+          const w = p.right - p.left;
+          const h = p.bottom - p.top;
+          const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
+          return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}"/><text x="${p.left + 6}" y="${p.top + 22}">${label}</text></g>`;
+        }).join("");
+      };
+      if (img.complete) drawBoxes(); else img.addEventListener("load", drawBoxes, { once: true });
+    }
+
+    body.appendChild(el(`
+      <div class="meta-grid">
+        <div class="k">Device</div><div>${event.host}</div>
+        <div class="k">Started</div><div>${new Date(event.started_epoch * 1000).toLocaleString()}</div>
+        <div class="k">Duration</div><div>${event.duration_secs ? event.duration_secs.toFixed(1) + "s" : "—"}</div>
+        <div class="k">Status</div><div>${event.status}</div>
+        <div class="k">Event ID</div><div><code>${event.event_id}</code></div>
+      </div>
+    `));
+
+    if (event.clip_file) {
+      body.appendChild(el(`<h2>Clip</h2>`));
+      const vidWrap = el(`<div class="hero-wrap clip-wrap"></div>`);
+      const vid = el(`<video controls playsinline preload="metadata" src="/media/${event.clip_file}"></video>`);
+      const vsvg = el(`<svg class="hero-overlay" preserveAspectRatio="none"></svg>`);
+      vidWrap.appendChild(vid);
+      vidWrap.appendChild(vsvg);
+      body.appendChild(vidWrap);
+
+      const clipPreds = endPayload?.clip_predictions || [];
+      if (clipPreds.length) {
+        // Sort by t (should already be, but be defensive)
+        clipPreds.sort((a, b) => a.t - b.t);
+        const drawAt = (t) => {
+          // nearest sample within 0.6s window
+          let sample = null, bestDiff = Infinity;
+          for (const s of clipPreds) {
+            const d = Math.abs(s.t - t);
+            if (d < bestDiff) { bestDiff = d; sample = s; }
+          }
+          const W = vid.videoWidth || 1920;
+          const H = vid.videoHeight || 1080;
+          vsvg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+          if (!sample || bestDiff > 0.6) { vsvg.innerHTML = ""; return; }
+          vsvg.innerHTML = (sample.boxes || []).map((p) => {
+            const w = p.right - p.left;
+            const h = p.bottom - p.top;
+            const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
+            return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}"/><text x="${p.left + 6}" y="${p.top + 22}">${label}</text></g>`;
+          }).join("");
+        };
+        vid.addEventListener("timeupdate", () => drawAt(vid.currentTime));
+        vid.addEventListener("seeked", () => drawAt(vid.currentTime));
+        vid.addEventListener("loadedmetadata", () => drawAt(vid.currentTime || 0));
+      }
+    }
+
+    if (preFiles.length) {
+      body.appendChild(el(`<h2>Pre-detection frames</h2>`));
+      const strip = el(`<div class="frame-strip"></div>`);
+      for (const f of preFiles) strip.appendChild(el(`<img src="/media/${f}" loading="lazy">`));
+      body.appendChild(strip);
+    }
+
+    if (tracks.length) {
+      body.appendChild(el(`<h2>Tracks</h2>`));
+      for (const t of tracks) {
+        body.appendChild(el(`
+          <div class="track">
+            <span class="cls">${t.class}</span>
+            <span>id=${t.track_id}</span>
+            <span>dur=${(t.duration_secs || 0).toFixed(1)}s</span>
+            <span>motion=${(t.movement_px || 0).toFixed(0)}px</span>
+            ${t.is_stationary ? `<span>stationary</span>` : ""}
+          </div>
+        `));
+      }
+    }
+
+    body.appendChild(el(`<h2>Phases</h2>`));
+    for (const p of phases) {
+      const box = el(`
+        <div class="phase">
+          <div class="ph-title">${p.phase}${p.detail ? ` · ${p.detail}` : ""} <span class="mute" style="color:var(--muted); font-weight:normal">${fmtTime(p.epoch)}</span></div>
+          <pre></pre>
+        </div>
+      `);
+      box.querySelector("pre").textContent = JSON.stringify(p.payload, null, 2);
+      body.appendChild(box);
+    }
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state">Failed to load: ${e.message}</div>`;
+  }
+}
+
+async function renderDevices() {
+  view.innerHTML = "";
+  view.appendChild(document.getElementById("tpl-devices").content.cloneNode(true));
+  const list = document.getElementById("devices-list");
+  const { devices } = await api("/api/devices");
+  if (!devices.length) {
+    list.innerHTML = `<div class="empty-state">No devices have reported yet.</div>`;
+    return;
+  }
+  list.innerHTML = "";
+  for (const d of devices) {
+    list.appendChild(el(`
+      <div class="device">
+        <div>
+          <div class="host">${d.name || d.host}</div>
+          <div class="mute">${d.host}</div>
+        </div>
+        <div class="mute">${d.event_count} events</div>
+        <div class="mute">first: ${fmtTime(d.first_seen)}</div>
+        <div class="mute">last: ${fmtTime(d.last_seen)}</div>
+      </div>
+    `));
+  }
+}
+
+function renderSettings() {
+  view.innerHTML = "";
+  view.appendChild(document.getElementById("tpl-settings").content.cloneNode(true));
+  const base = location.origin;
+  document.getElementById("hook-url").textContent = `${base}/hooks/clawcam`;
+  document.getElementById("stream-url").textContent = `${base}/api/stream`;
+  document.getElementById("clawcam-example").textContent =
+    `clawcam setup <name> \\
+  --webhook ${base}/hooks/clawcam \\
+  --webhook-token YOUR_SHARED_TOKEN`;
+}
+
+function connectStream() {
+  if (state.stream) state.stream.close();
+  const es = new EventSource("/api/stream");
+  state.stream = es;
+  es.onopen = () => {
+    liveDot.classList.remove("off");
+    liveDot.classList.add("on");
+    liveText.textContent = "live";
+  };
+  es.onerror = () => {
+    liveDot.classList.add("off");
+    liveDot.classList.remove("on");
+    liveText.textContent = "reconnecting…";
+  };
+  es.addEventListener("event", (m) => {
+    let data;
+    try { data = JSON.parse(m.data); } catch { return; }
+    showFlash(data);
+    if (location.hash.startsWith("#/events") || !location.hash || location.hash === "#/") {
+      loadEvents().catch(() => {});
+    }
+  });
+  es.addEventListener("telemetry", (m) => {
+    let data;
+    try { data = JSON.parse(m.data); } catch { return; }
+    drawOverlay(data);
+  });
+}
+
+function drawOverlay(t) {
+  if (!t.host || !t.width || !t.height) return;
+  // Telemetry uses the Pi's own hostname, device names, or IP — match on hostname first, then device name.
+  const tiles = document.querySelectorAll(".live-tile");
+  for (const tile of tiles) {
+    const host = tile.dataset.host;
+    const name = tile.dataset.name;
+    if (t.host !== host && t.host !== name) continue;
+    const svg = tile.querySelector("svg.overlay");
+    if (!svg) continue;
+    const W = t.width, H = t.height;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const preds = t.predictions || [];
+    svg.innerHTML = preds.map((p) => {
+      const w = p.right - p.left;
+      const h = p.bottom - p.top;
+      const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
+      return `<g><rect x="${p.left}" y="${p.top}" width="${w}" height="${h}" /><text x="${p.left + 4}" y="${p.top + 14}">${label}</text></g>`;
+    }).join("");
+    // Auto-clear if no more frames arrive within 1.5s (handled by next telemetry or timeout).
+    if (tile._overlayTimer) clearTimeout(tile._overlayTimer);
+    tile._overlayTimer = setTimeout(() => { svg.innerHTML = ""; }, 1500);
+  }
+}
+
+function showFlash(ev) {
+  const existing = document.querySelector(".flash");
+  if (existing) existing.remove();
+  const f = el(`<div class="flash">new ${ev.phase} · ${ev.host}</div>`);
+  f.onclick = () => { location.hash = `#/event/${ev.event_id}`; f.remove(); };
+  document.body.appendChild(f);
+  setTimeout(() => f.remove(), 5000);
+}
+
+window.addEventListener("hashchange", () => { stopLive(); route(); });
+route();
+connectStream();

@@ -1,0 +1,21 @@
+# server
+node_modules/
+data/
+.env
+*.log
+
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.cxx/
+*.iml
+*.apk
+*.aab
+.idea/
+
+# editor
+.DS_Store
+*.swp

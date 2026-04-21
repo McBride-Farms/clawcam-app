@@ -1,0 +1,14 @@
+[Unit]
+Description=clawcam companion — event ingest and web UI
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/clawcam-app/server
+EnvironmentFile=-%h/clawcam-app/server/.env
+ExecStart=/bin/bash -lc '. $HOME/.nvm/nvm.sh && nvm use 22 >/dev/null && exec node src/index.js'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

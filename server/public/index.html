@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>clawcam</title>
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='%23e94560'/></svg>" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <span>clawcam</span>
+  </div>
+  <nav class="nav">
+    <a href="#/live" data-route="live">Live</a>
+    <a href="#/events" data-route="events">Events</a>
+    <a href="#/devices" data-route="devices">Devices</a>
+    <a href="#/settings" data-route="settings">Settings</a>
+  </nav>
+  <div class="status">
+    <span id="live-dot" class="live off"></span>
+    <span id="live-text">offline</span>
+  </div>
+</header>
+
+<main id="view"></main>
+
+<template id="tpl-events">
+  <section class="events-view">
+    <div class="filters">
+      <select id="filter-host"><option value="">All devices</option></select>
+      <select id="filter-since">
+        <option value="24">Last 24h</option>
+        <option value="168" selected>Last 7d</option>
+        <option value="720">Last 30d</option>
+      </select>
+      <button id="refresh">Refresh</button>
+    </div>
+    <div id="events-list" class="events"></div>
+  </section>
+</template>
+
+<template id="tpl-detail">
+  <section class="detail">
+    <button class="back" onclick="history.back()">&larr; back</button>
+    <div id="detail-body"></div>
+  </section>
+</template>
+
+<template id="tpl-live">
+  <section class="live-view">
+    <div class="filters">
+      <label class="cadence" style="display:none">Poll
+        <select id="live-cadence">
+          <option value="1000">1s</option>
+          <option value="2000">2s</option>
+        </select>
+      </label>
+      <button id="live-fullscreen">Toggle focus</button>
+    </div>
+    <div id="live-grid" class="live-grid"></div>
+  </section>
+</template>
+
+<template id="tpl-devices">
+  <section class="devices">
+    <h2>Devices</h2>
+    <div id="devices-list"></div>
+  </section>
+</template>
+
+<template id="tpl-settings">
+  <section class="settings">
+    <h2>Settings</h2>
+    <p class="hint">Point <code>clawcam</code> webhook at this server. The URL below works for devices on this LAN.</p>
+    <div class="kv">
+      <div>Webhook URL</div>
+      <code id="hook-url"></code>
+    </div>
+    <div class="kv">
+      <div>Stream URL</div>
+      <code id="stream-url"></code>
+    </div>
+    <h3>Register a clawcam device</h3>
+    <pre id="clawcam-example"></pre>
+  </section>
+</template>
+
+<script src="/hls.min.js"></script>
+<script src="/app.js" type="module"></script>
+</body>
+</html>
