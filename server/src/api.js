@@ -76,7 +76,9 @@ export function buildRouter() {
       hls_base: config.hlsBase || defaultHls,
       webrtc_base: config.webrtcBase || defaultWrtc,
       rtsp_base: config.rtspBase || defaultRtsp,
-      webhook_url: `${req.protocol}://${req.headers.host}/hooks/clawcam`,
+      webhook_url:
+        config.webhookUrl ||
+        `${req.protocol}://${req.headers.host}/hooks/clawcam`,
     });
   });
 

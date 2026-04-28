@@ -46,4 +46,9 @@ export const config = {
   hlsBase: env("CLAWCAM_APP_HLS_BASE", "CLAWHUB_HLS_BASE") || "",
   webrtcBase: env("CLAWCAM_APP_WEBRTC_BASE", "CLAWHUB_WEBRTC_BASE") || "",
   rtspBase: env("CLAWCAM_APP_RTSP_BASE", "CLAWHUB_RTSP_BASE") || "",
+  // Canonical camera webhook destination surfaced via /api/config so clients
+  // (e.g. the Android app, /setup hint) point cameras at the right place.
+  // When unset, falls back to this server's own /hooks/clawcam path for
+  // backwards compatibility.
+  webhookUrl: env("CLAWCAM_APP_WEBHOOK_URL", "CLAWHUB_WEBHOOK_URL") || "",
 };
