@@ -91,15 +91,17 @@ function route() {
 
 let liveState = { hlsInstances: [], pollTimer: null, tiles: new Map(), cfg: null };
 
-async function sendPtz(host, body) {
-  try {
-    await fetch(`/api/devices/${encodeURIComponent(host)}/ptz`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify(body),
-    });
-  } catch {}
+function sendPtz(host, body) {
+  // Fire-and-forget — never block the UI on the network round-trip. The
+  // device returns 200 immediately after writing the initial VISCA byte
+  // (clawcam ≥ 0.5.6), but even with a slow link we don't want d-pad
+  // press/release to feel laggy.
+  fetch(`/api/devices/${encodeURIComponent(host)}/ptz`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(body),
+  }).catch(() => {});
 }
 
 function wireTilePtz(tile, host) {
@@ -107,9 +109,11 @@ function wireTilePtz(tile, host) {
   // While held: fire a short burst, then re-fire it at REISSUE_MS intervals
   // so the motor stays running. On release: explicit stop. If the release
   // gets dropped by the network, the motor's own auto-stop kicks in after
-  // BURST_MS (≤1s fallback) instead of running for a long tail.
-  const BURST_MS = 800;
-  const REISSUE_MS = 500;
+  // BURST_MS — kept short so we don't over-pan when stop is lost. Each new
+  // burst aborts the prior one server-side (clawcam ≥ 0.5.6), so BURST_MS
+  // just needs a small safety margin over REISSUE_MS.
+  const BURST_MS = 400;
+  const REISSUE_MS = 250;
 
   const bodyFor = (action) => {
     switch (action) {
@@ -380,11 +384,14 @@ function applyTileStream(name, stream) {
     if (entry.live) return; // already attached
     entry.live = true;
     snap.hidden = true; ph.hidden = true; video.hidden = false;
-    const url = `${liveState.cfg.hls_base}/${encodeURIComponent(name)}/index.m3u8`;
-    const hls = attachHls(video, url,
+    const hlsUrl = `${liveState.cfg.hls_base}/${encodeURIComponent(name)}/index.m3u8`;
+    const whepUrl = liveState.cfg.webrtc_base
+      ? `${liveState.cfg.webrtc_base}/${encodeURIComponent(name)}/whep`
+      : null;
+    const player = attachLiveStream(video, { hlsUrl, whepUrl },
       () => {
         dot.classList.remove("dead", "reconnecting");
-        age.textContent = "live";
+        age.textContent = entry.transport === "webrtc" ? "live · rtc" : "live";
         age.classList.remove("reconnecting");
       },
       () => {
@@ -392,8 +399,9 @@ function applyTileStream(name, stream) {
         dot.classList.remove("dead");
         age.textContent = "reconnecting…";
         age.classList.add("reconnecting");
-      });
-    entry.hls = hls;
+      },
+      (transport) => { entry.transport = transport; });
+    entry.hls = player;
   } else {
     if (entry.live) {
       try { entry.hls?.destroy?.(); } catch {}
@@ -433,10 +441,11 @@ async function loadLastSnapshot(device, imgEl, phEl, ageEl) {
   ageEl.textContent = "offline";
 }
 
-function attachHls(video, url, onPlay, onFail) {
-  // Wraps the raw hls.js attach with exponential backoff reconnection so a
-  // transient stream blip (mediamtx restart, wifi glitch) recovers on its
-  // own. Returns a handle with destroy() that stops the retry loop.
+function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
+  // Tries WebRTC (WHEP against MediaMTX) first for sub-second latency, falls
+  // back to HLS on failure. Wraps both with exponential backoff reconnection
+  // so a transient stream blip recovers on its own. Returns a handle with
+  // destroy() that closes the active player and stops the retry loop.
   const applyAspect = () => {
     const tile = video.closest(".live-tile");
     if (!tile || !video.videoWidth || !video.videoHeight) return;
@@ -447,17 +456,36 @@ function attachHls(video, url, onPlay, onFail) {
   video.addEventListener("loadedmetadata", applyAspect);
   video.addEventListener("resize", applyAspect);
 
+  let pc = null;
   let hls = null;
   let retryTimer = null;
   let retryDelayMs = 1000;
   let stopped = false;
+  // Once WebRTC has succeeded once, prefer it on reconnect. If the first
+  // attempt fails, "stick" to HLS so we don't burn time retrying a broken
+  // path on every backoff cycle.
+  let mode = urls.whepUrl ? "webrtc" : "hls";
+  let webrtcEverWorked = false;
+
+  const cleanup = () => {
+    try { pc?.close?.(); } catch {}
+    try { hls?.destroy?.(); } catch {}
+    pc = null;
+    hls = null;
+  };
 
   const fail = () => {
     if (stopped) return;
     onFail();
-    try { hls?.destroy?.(); } catch {}
-    hls = null;
+    cleanup();
     clearTimeout(retryTimer);
+    if (mode === "webrtc" && !webrtcEverWorked && urls.hlsUrl) {
+      // First WebRTC attempt failed → fall through to HLS immediately,
+      // no backoff, so the user sees video as fast as possible.
+      mode = "hls";
+      attach();
+      return;
+    }
     retryTimer = setTimeout(() => {
       if (stopped) return;
       retryDelayMs = Math.min(retryDelayMs * 2, 15000);
@@ -465,26 +493,97 @@ function attachHls(video, url, onPlay, onFail) {
     }, retryDelayMs);
   };
 
-  const attach = () => {
-    if (stopped) return;
+  const attachWebrtc = async () => {
+    onTransport?.("webrtc");
+    pc = new RTCPeerConnection({ iceServers: [] });
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.ontrack = (ev) => {
+      if (ev.streams && ev.streams[0] && video.srcObject !== ev.streams[0]) {
+        video.srcObject = ev.streams[0];
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      const s = pc?.iceConnectionState;
+      if (s === "failed" || s === "closed" || s === "disconnected") fail();
+    };
+
+    const localPc = pc;
+    const setupTimeout = setTimeout(() => {
+      if (pc === localPc) fail();
+    }, 5000);
+
+    try {
+      const offer = await localPc.createOffer();
+      await localPc.setLocalDescription(offer);
+      // Wait briefly for ICE host candidates to gather; on LAN this is fast.
+      await new Promise((resolve) => {
+        if (localPc.iceGatheringState === "complete") return resolve();
+        const handler = () => {
+          if (localPc.iceGatheringState === "complete") {
+            localPc.removeEventListener("icegatheringstatechange", handler);
+            resolve();
+          }
+        };
+        localPc.addEventListener("icegatheringstatechange", handler);
+        setTimeout(resolve, 1500); // proceed even if gathering stalls
+      });
+      if (stopped || pc !== localPc) return;
+      const resp = await fetch(urls.whepUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: localPc.localDescription.sdp,
+      });
+      if (!resp.ok) throw new Error(`whep ${resp.status}`);
+      const answerSdp = await resp.text();
+      if (stopped || pc !== localPc) return;
+      await localPc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      const onLoaded = () => {
+        clearTimeout(setupTimeout);
+        retryDelayMs = 1000;
+        webrtcEverWorked = true;
+        onPlay();
+      };
+      video.addEventListener("loadeddata", onLoaded, { once: true });
+      video.play().catch(() => {}); // muted autoplay should succeed
+    } catch (e) {
+      clearTimeout(setupTimeout);
+      console.warn("webrtc attach failed, falling back to HLS:", e);
+      fail();
+    }
+  };
+
+  const attachHlsInner = () => {
+    onTransport?.("hls");
     if (window.Hls && window.Hls.isSupported()) {
       hls = new Hls({ liveDurationInfinity: true, lowLatencyMode: true });
-      hls.loadSource(url);
+      hls.loadSource(urls.hlsUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () =>
         video.play().then(() => {
-          retryDelayMs = 1000; // reset backoff on successful play
+          retryDelayMs = 1000;
           onPlay();
         }).catch(fail)
       );
       hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail(); });
       liveState.hlsInstances.push(hls);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
+      video.src = urls.hlsUrl;
       video.addEventListener("loadeddata", () => { retryDelayMs = 1000; onPlay(); });
       video.addEventListener("error", fail);
     } else {
       fail();
+    }
+  };
+
+  const attach = () => {
+    if (stopped) return;
+    cleanup();
+    // srcObject from a prior WebRTC session would mask a fresh HLS attach.
+    if (video.srcObject) { try { video.srcObject = null; } catch {} }
+    if (mode === "webrtc" && urls.whepUrl) {
+      attachWebrtc();
+    } else {
+      attachHlsInner();
     }
   };
 
@@ -494,12 +593,20 @@ function attachHls(video, url, onPlay, onFail) {
     destroy: () => {
       stopped = true;
       clearTimeout(retryTimer);
-      try { hls?.destroy?.(); } catch {}
+      cleanup();
+      if (video.srcObject) { try { video.srcObject = null; } catch {} }
     },
   };
 }
 
 function stopLive() {
+  // Destroy per-tile player handles (closes RTCPeerConnections too).
+  for (const entry of liveState.tiles?.values() ?? []) {
+    try { entry.hls?.destroy?.(); } catch {}
+    entry.hls = null;
+    entry.live = false;
+  }
+  // Defensive: any raw Hls.js instances pushed by attachLiveStream's HLS path.
   for (const h of liveState.hlsInstances) {
     try { h.destroy(); } catch {}
   }
