@@ -119,6 +119,33 @@ export function buildRouter() {
     res.json({ ok: true });
   });
 
+  // Single-device fetch — used by the OpenClaw fanout transform to read the
+  // per-camera system_prompt before issuing a vision call. Public read
+  // (auth was already dropped repo-wide for /api/* in commit 794e366).
+  r.get("/api/devices/:host", requireAuth, (req, res) => {
+    const host = req.params.host;
+    if (!HOST_RE.test(host)) return res.status(400).json({ error: "bad host" });
+    const dev = stmts.getDevice.get(host);
+    if (!dev) return res.status(404).json({ error: "not_found" });
+    res.json({ device: dev });
+  });
+
+  // Edit a device's per-camera vision prompt. Accepts an empty string or null
+  // to clear (which falls the transform back to the generic prompt).
+  r.patch("/api/devices/:host", requireAuth, express.json(), (req, res) => {
+    const host = req.params.host;
+    if (!HOST_RE.test(host)) return res.status(400).json({ error: "bad host" });
+    const dev = stmts.getDevice.get(host);
+    if (!dev) return res.status(404).json({ error: "not_found" });
+    const body = req.body || {};
+    if (Object.prototype.hasOwnProperty.call(body, "system_prompt")) {
+      const raw = body.system_prompt;
+      const value = typeof raw === "string" && raw.trim() ? raw.trim().slice(0, 4000) : null;
+      stmts.setDeviceSystemPrompt.run({ host, system_prompt: value });
+    }
+    res.json({ device: stmts.getDevice.get(host) });
+  });
+
   r.get("/api/events", requireAuth, (req, res) => {
     const host = req.query.host ? String(req.query.host) : null;
     const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);

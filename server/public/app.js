@@ -835,8 +835,14 @@ async function renderDevices() {
   }
   list.innerHTML = "";
   for (const d of devices) {
-    list.appendChild(el(`
-      <div class="device">
+    list.appendChild(deviceCard(d));
+  }
+}
+
+function deviceCard(d) {
+  const card = el(`
+    <div class="device">
+      <div class="device-head">
         <div>
           <div class="host">${esc(d.name || d.host)}</div>
           <div class="mute">${esc(d.host)}</div>
@@ -845,8 +851,51 @@ async function renderDevices() {
         <div class="mute">first: ${fmtTime(d.first_seen)}</div>
         <div class="mute">last: ${fmtTime(d.last_seen)}</div>
       </div>
-    `));
-  }
+      <div class="device-prompt">
+        <label class="prompt-label" for="prompt-${cssToken(d.host)}">
+          Vision prompt for this camera
+          <span class="mute"> — steers what the model treats as routine vs. interesting. Leave blank for the generic prompt.</span>
+        </label>
+        <textarea id="prompt-${cssToken(d.host)}" class="prompt-input" rows="3"
+          placeholder="e.g. Front-door camera. Treat any unfamiliar person or vehicle as suggested_action=alert. Mail delivery and the homeowner's silver pickup are routine."
+        >${esc(d.system_prompt || "")}</textarea>
+        <div class="prompt-actions">
+          <span class="prompt-status mute"></span>
+          <button class="prompt-save">Save</button>
+        </div>
+      </div>
+    </div>
+  `);
+  const ta = card.querySelector(".prompt-input");
+  const status = card.querySelector(".prompt-status");
+  const btn = card.querySelector(".prompt-save");
+  const initial = d.system_prompt || "";
+  ta.addEventListener("input", () => {
+    btn.disabled = ta.value === initial;
+  });
+  btn.disabled = true;
+  btn.onclick = async () => {
+    btn.disabled = true;
+    status.textContent = "saving…";
+    try {
+      const r = await fetch(`/api/devices/${encodeURIComponent(d.host)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ system_prompt: ta.value }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      const newVal = j?.device?.system_prompt || "";
+      ta.value = newVal;
+      status.textContent = "saved";
+      setTimeout(() => { status.textContent = ""; }, 2000);
+    } catch (e) {
+      status.textContent = `error: ${e.message}`;
+      btn.disabled = false;
+    }
+  };
+  return card;
 }
 
 function renderSettings() {

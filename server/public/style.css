@@ -90,9 +90,17 @@ main { padding: 20px; max-width: 1100px; margin: 0 auto; }
 .detail .track .cls { color: var(--accent); font-weight: 600; }
 
 .devices { }
-.device { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; display: grid; grid-template-columns: 1fr max-content max-content max-content; gap: 16px; align-items: center; }
+.device { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 10px; }
+.device .device-head { display: grid; grid-template-columns: 1fr max-content max-content max-content; gap: 16px; align-items: center; }
 .device .host { font-weight: 600; color: var(--accent); }
 .device .mute { color: var(--muted); font-size: 0.85rem; }
+.device .device-prompt { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.device .prompt-label { color: var(--text); font-size: 0.85rem; }
+.device .prompt-input { width: 100%; min-height: 64px; padding: 8px 10px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font: inherit; resize: vertical; }
+.device .prompt-input:focus { outline: 1px solid var(--accent); }
+.device .prompt-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
+.device .prompt-save { background: var(--accent); color: #000; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-weight: 600; }
+.device .prompt-save:disabled { background: var(--surface-2); color: var(--muted); cursor: default; }
 
 .settings .kv { display: grid; grid-template-columns: 160px 1fr; gap: 8px; margin-bottom: 10px; align-items: center; }
 .settings pre { background: var(--surface); padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); overflow-x: auto; }
@@ -201,7 +209,7 @@ main { padding: 20px; max-width: 1100px; margin: 0 auto; }
   main { padding: 12px; }
   .topbar { padding: 10px 14px; }
   .nav a { padding: 6px; font-size: 0.85rem; }
-  .device { grid-template-columns: 1fr max-content; row-gap: 4px; }
+  .device .device-head { grid-template-columns: 1fr max-content; row-gap: 4px; }
   .live-tile .ptz { bottom: 10px; left: 10px; padding: 6px 8px; }
   .live-tile .ptz-joystick-base { width: 80px; height: 80px; }
   .live-tile .ptz-joystick-thumb { width: 32px; height: 32px; }

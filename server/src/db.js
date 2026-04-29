@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS devices (
   name          TEXT,
   first_seen    INTEGER NOT NULL,
   last_seen     INTEGER NOT NULL,
-  event_count   INTEGER NOT NULL DEFAULT 0
+  event_count   INTEGER NOT NULL DEFAULT 0,
+  system_prompt TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -46,16 +47,17 @@ CREATE TABLE IF NOT EXISTS phases (
 CREATE INDEX IF NOT EXISTS phases_event ON phases(event_id, epoch);
 `);
 
-// Lightweight migration for DBs created before vision_* columns were added.
+// Lightweight migration for DBs created before later columns were added.
 // SQLite has no IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we feature-detect.
 {
-  const cols = new Set(db.prepare(`PRAGMA table_info(events)`).all().map((c) => c.name));
-  const ensureCol = (name, type) => {
-    if (!cols.has(name)) db.exec(`ALTER TABLE events ADD COLUMN ${name} ${type}`);
+  const ensureCol = (table, name, type) => {
+    const cols = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+    if (!cols.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
   };
-  ensureCol("vision_caption", "TEXT");
-  ensureCol("vision_interest_level", "INTEGER");
-  ensureCol("vision_suggested_action", "TEXT");
+  ensureCol("events", "vision_caption", "TEXT");
+  ensureCol("events", "vision_interest_level", "INTEGER");
+  ensureCol("events", "vision_suggested_action", "TEXT");
+  ensureCol("devices", "system_prompt", "TEXT");
 }
 
 export const stmts = {
@@ -73,7 +75,13 @@ export const stmts = {
     `UPDATE devices SET event_count = event_count + 1 WHERE host = ?`
   ),
   listDevices: db.prepare(
-    `SELECT host, name, first_seen, last_seen, event_count FROM devices ORDER BY last_seen DESC`
+    `SELECT host, name, first_seen, last_seen, event_count, system_prompt FROM devices ORDER BY last_seen DESC`
+  ),
+  getDevice: db.prepare(
+    `SELECT host, name, first_seen, last_seen, event_count, system_prompt FROM devices WHERE host = ?`
+  ),
+  setDeviceSystemPrompt: db.prepare(
+    `UPDATE devices SET system_prompt = @system_prompt WHERE host = @host`
   ),
 
   getEvent: db.prepare(`SELECT * FROM events WHERE event_id = ?`),
