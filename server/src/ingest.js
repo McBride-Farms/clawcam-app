@@ -26,9 +26,21 @@ function sanitizeForStore(payload) {
   return clone;
 }
 
+// If `host` matches a registered device's `name` (e.g. "pond-cam") rather than
+// its canonical host ("pond-cam.mcbridefarm.com"), rewrite to the canonical
+// form. Without this, a synthetic post using the short hostname creates a
+// second `devices` row alongside the real FQDN row and the UI shows a duplicate.
+function canonicalizeHost(host) {
+  if (!host) return host;
+  const match = stmts.listDevices
+    .all()
+    .find((d) => d.name === host && d.host !== host);
+  return match ? match.host : host;
+}
+
 export function ingestEvent(payload) {
   const now = Math.floor(Date.now() / 1000);
-  const host = payload.host || "unknown";
+  const host = canonicalizeHost(payload.host || "unknown");
   const phase = payload.event_phase || "start";
   const eventId =
     payload.event_id ||
