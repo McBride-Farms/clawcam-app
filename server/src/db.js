@@ -15,17 +15,19 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 
 CREATE TABLE IF NOT EXISTS events (
-  event_id       TEXT PRIMARY KEY,
-  host           TEXT NOT NULL,
-  started_epoch  INTEGER NOT NULL,
-  ended_epoch    INTEGER,
-  duration_secs  REAL,
-  classes        TEXT,
-  status         TEXT NOT NULL DEFAULT 'active',
-  image_file     TEXT,
-  clip_file      TEXT,
-  vision_caption TEXT,
-  updated_at     INTEGER NOT NULL
+  event_id              TEXT PRIMARY KEY,
+  host                  TEXT NOT NULL,
+  started_epoch         INTEGER NOT NULL,
+  ended_epoch           INTEGER,
+  duration_secs         REAL,
+  classes               TEXT,
+  status                TEXT NOT NULL DEFAULT 'active',
+  image_file            TEXT,
+  clip_file             TEXT,
+  vision_caption        TEXT,
+  vision_interest_level INTEGER,
+  vision_suggested_action TEXT,
+  updated_at            INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_host_started
   ON events(host, started_epoch DESC);
@@ -44,13 +46,16 @@ CREATE TABLE IF NOT EXISTS phases (
 CREATE INDEX IF NOT EXISTS phases_event ON phases(event_id, epoch);
 `);
 
-// Lightweight migration for DBs created before vision_caption was added.
+// Lightweight migration for DBs created before vision_* columns were added.
 // SQLite has no IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we feature-detect.
 {
-  const cols = db.prepare(`PRAGMA table_info(events)`).all().map((c) => c.name);
-  if (!cols.includes("vision_caption")) {
-    db.exec(`ALTER TABLE events ADD COLUMN vision_caption TEXT`);
-  }
+  const cols = new Set(db.prepare(`PRAGMA table_info(events)`).all().map((c) => c.name));
+  const ensureCol = (name, type) => {
+    if (!cols.has(name)) db.exec(`ALTER TABLE events ADD COLUMN ${name} ${type}`);
+  };
+  ensureCol("vision_caption", "TEXT");
+  ensureCol("vision_interest_level", "INTEGER");
+  ensureCol("vision_suggested_action", "TEXT");
 }
 
 export const stmts = {
@@ -73,14 +78,28 @@ export const stmts = {
 
   getEvent: db.prepare(`SELECT * FROM events WHERE event_id = ?`),
   insertEvent: db.prepare(`
-    INSERT INTO events (event_id, host, started_epoch, classes, status, image_file, vision_caption, updated_at)
-    VALUES (@event_id, @host, @started_epoch, @classes, 'active', @image_file, @vision_caption, @now)
+    INSERT INTO events (
+      event_id, host, started_epoch, classes, status, image_file,
+      vision_caption, vision_interest_level, vision_suggested_action, updated_at
+    )
+    VALUES (
+      @event_id, @host, @started_epoch, @classes, 'active', @image_file,
+      @vision_caption, @vision_interest_level, @vision_suggested_action, @now
+    )
   `),
-  // Captions can arrive on a later phase (e.g. transform computes one for `end`
-  // but not `start`). Only overwrite when the new one is non-empty.
-  updateEventVisionCaption: db.prepare(`
-    UPDATE events SET vision_caption = @vision_caption, updated_at = @now
-     WHERE event_id = @event_id AND @vision_caption IS NOT NULL AND @vision_caption != ''
+  // Vision fields can arrive on a later phase (e.g. transform computes them
+  // for `end` but not `start`). Only overwrite when the caption is non-empty
+  // — that's our "did vision succeed?" signal — so a failed second call
+  // doesn't blank out a successful first one.
+  updateEventVision: db.prepare(`
+    UPDATE events
+       SET vision_caption = @vision_caption,
+           vision_interest_level = @vision_interest_level,
+           vision_suggested_action = @vision_suggested_action,
+           updated_at = @now
+     WHERE event_id = @event_id
+       AND @vision_caption IS NOT NULL
+       AND @vision_caption != ''
   `),
   updateEventEnd: db.prepare(`
     UPDATE events

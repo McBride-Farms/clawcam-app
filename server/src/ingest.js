@@ -65,13 +65,23 @@ export function ingestEvent(payload) {
   const storedPayload = sanitizeForStore(payload);
   if (preFrames.length) storedPayload.pre_frame_files = preFrames;
 
-  // Vision caption from the OpenClaw fanout transform (clawcam_fanout.js
-  // calls Qwen on grunt-node2 before forwarding the payload here). Empty
-  // string is normalized to null so SQL NULL semantics work.
+  // Structured vision observation from the OpenClaw fanout transform
+  // (clawcam_fanout.js calls the configured vision model on grunt-node2 and
+  // attaches caption/interest/action to the payload before forwarding here).
+  // Empty/missing fields normalize to NULL so SQL semantics work.
   const visionCaption =
     typeof payload.vision_caption === "string" && payload.vision_caption.trim()
       ? payload.vision_caption.trim()
       : null;
+  const visionInterest =
+    Number.isInteger(payload.vision_interest_level) &&
+    payload.vision_interest_level >= 0 &&
+    payload.vision_interest_level <= 3
+      ? payload.vision_interest_level
+      : null;
+  const visionAction = ["none", "investigate", "alert"].includes(payload.vision_suggested_action)
+    ? payload.vision_suggested_action
+    : null;
 
   if (!existing) {
     stmts.insertEvent.run({
@@ -81,13 +91,17 @@ export function ingestEvent(payload) {
       classes: classesFromPredictions(payload.predictions),
       image_file: imageFile,
       vision_caption: visionCaption,
+      vision_interest_level: visionInterest,
+      vision_suggested_action: visionAction,
       now,
     });
     stmts.bumpDeviceEvents.run(host);
   } else if (visionCaption) {
-    stmts.updateEventVisionCaption.run({
+    stmts.updateEventVision.run({
       event_id: eventId,
       vision_caption: visionCaption,
+      vision_interest_level: visionInterest,
+      vision_suggested_action: visionAction,
       now,
     });
   }
