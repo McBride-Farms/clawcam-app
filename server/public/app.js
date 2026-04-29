@@ -503,8 +503,10 @@ function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
       }
     };
     pc.oniceconnectionstatechange = () => {
-      const s = pc?.iceConnectionState;
-      if (s === "failed" || s === "closed" || s === "disconnected") fail();
+      // Only "failed" is terminal — "disconnected" is often transient and
+      // recovers on its own; "closed" only fires when we tore the PC down
+      // ourselves, so reacting to it would loop.
+      if (pc?.iceConnectionState === "failed") fail();
     };
 
     const localPc = pc;
