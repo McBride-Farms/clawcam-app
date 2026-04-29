@@ -55,6 +55,10 @@ main { padding: 20px; max-width: 1100px; margin: 0 auto; }
 .event .when { color: var(--muted); font-size: 0.78rem; }
 .event .classes { margin-top: 4px; color: var(--text); font-size: 0.85rem; display: flex; flex-wrap: wrap; gap: 4px; }
 .event .tag { background: var(--surface-2); border-radius: 4px; padding: 1px 6px; font-size: 0.75rem; }
+.event .vision { margin-top: 6px; color: var(--muted); font-size: 0.78rem; font-style: italic; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.vision-banner { background: var(--surface-2); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 4px; margin: 12px 0; display: flex; gap: 10px; align-items: flex-start; font-size: 0.92rem; }
+.vision-banner .vision-label { color: var(--accent); font-weight: 600; flex-shrink: 0; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; padding-top: 2px; }
+.vision-banner .vision-text { color: var(--text); line-height: 1.4; }
 .event .status-pill { font-size: 0.7rem; padding: 1px 6px; border-radius: 10px; }
 .event .status-pill.active { background: rgba(63, 185, 80, 0.15); color: var(--good); border: 1px solid rgba(63, 185, 80, 0.4); }
 .event .status-pill.ended { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }

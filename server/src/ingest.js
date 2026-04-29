@@ -65,6 +65,14 @@ export function ingestEvent(payload) {
   const storedPayload = sanitizeForStore(payload);
   if (preFrames.length) storedPayload.pre_frame_files = preFrames;
 
+  // Vision caption from the OpenClaw fanout transform (clawcam_fanout.js
+  // calls Qwen on grunt-node2 before forwarding the payload here). Empty
+  // string is normalized to null so SQL NULL semantics work.
+  const visionCaption =
+    typeof payload.vision_caption === "string" && payload.vision_caption.trim()
+      ? payload.vision_caption.trim()
+      : null;
+
   if (!existing) {
     stmts.insertEvent.run({
       event_id: eventId,
@@ -72,9 +80,16 @@ export function ingestEvent(payload) {
       started_epoch: epoch,
       classes: classesFromPredictions(payload.predictions),
       image_file: imageFile,
+      vision_caption: visionCaption,
       now,
     });
     stmts.bumpDeviceEvents.run(host);
+  } else if (visionCaption) {
+    stmts.updateEventVisionCaption.run({
+      event_id: eventId,
+      vision_caption: visionCaption,
+      now,
+    });
   }
 
   if (phase === "end") {
