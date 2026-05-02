@@ -1,4 +1,7 @@
 import express from "express";
+import http from "node:http";
+import https from "node:https";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
@@ -38,12 +41,38 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
-app.listen(config.port, config.host, () => {
-  console.log(`clawcam-app listening on http://${config.host}:${config.port}`);
-  console.log(`data dir: ${config.dataDir}`);
-  console.log(`retention: ${config.retentionDays}d`);
-  console.log(`auth token: ${config.token ? "configured" : "DISABLED (open)"}`);
-});
+const tlsCreds = config.tlsCertDir && (() => {
+  try {
+    return {
+      key: fs.readFileSync(path.join(config.tlsCertDir, "key.pem")),
+      cert: fs.readFileSync(path.join(config.tlsCertDir, "fullchain.pem")),
+    };
+  } catch (err) {
+    console.error(`[tls] cert dir ${config.tlsCertDir} unreadable, falling back to HTTP: ${err.message}`);
+    return null;
+  }
+})();
+
+if (tlsCreds) {
+  https.createServer(tlsCreds, app).listen(config.tlsPort, config.host, () => {
+    console.log(`clawcam-app HTTPS on ${config.host}:${config.tlsPort}`);
+  });
+  const redirect = express();
+  redirect.use((req, res) => {
+    const host = (req.headers.host || "").split(":")[0] || "localhost";
+    res.redirect(301, `https://${host}${req.url}`);
+  });
+  http.createServer(redirect).listen(config.port, config.host, () => {
+    console.log(`clawcam-app HTTP→HTTPS redirect on ${config.host}:${config.port}`);
+  });
+} else {
+  app.listen(config.port, config.host, () => {
+    console.log(`clawcam-app HTTP on ${config.host}:${config.port}`);
+  });
+}
+console.log(`data dir: ${config.dataDir}`);
+console.log(`retention: ${config.retentionDays}d`);
+console.log(`auth token: ${config.token ? "configured" : "DISABLED (open)"}`);
 
 setInterval(() => {
   try {

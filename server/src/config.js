@@ -51,4 +51,8 @@ export const config = {
   // When unset, falls back to this server's own /hooks/clawcam path for
   // backwards compatibility.
   webhookUrl: env("CLAWCAM_APP_WEBHOOK_URL", "CLAWHUB_WEBHOOK_URL") || "",
+  // When set, server reads <dir>/fullchain.pem + <dir>/key.pem and serves
+  // HTTPS on tlsPort, with `port` demoted to a 301 redirect to https.
+  tlsCertDir: env("CLAWCAM_APP_TLS_CERT_DIR") || "",
+  tlsPort: parseInt(env("CLAWCAM_APP_TLS_PORT") || "443", 10),
 };

@@ -51,8 +51,10 @@ jobs:
             --mac-address 02:42:c0:a8:01:f1 \
             --cap-add NET_ADMIN \
             -v "$DATA_DIR":/app/data \
+            -v ***REDACTED-CERT-DIR***/clawcam-app.mcbridefarm.com:/etc/ssl/clawcam-app:ro \
             --env-file "$ENV_FILE" \
             -e CLAWCAM_APP_DATA_DIR=/app/data \
+            -e CLAWCAM_APP_TLS_CERT_DIR=/etc/ssl/clawcam-app \
             clawcam-app:latest
 
       - name: Smoke test
