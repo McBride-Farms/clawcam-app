@@ -410,16 +410,12 @@ function applyTileStream(name, stream) {
     video.hidden = true;
     dot.classList.add("dead");
     age.textContent = "offline";
-    // Try live JPEG (frame proxy). If that fails, show last event snapshot.
-    const jpegUrl = `/api/devices/${encodeURIComponent(device.host)}/latest.jpg?t=${Date.now()}`;
+    // Show the most recent event snapshot instead. We used to first try a
+    // live HTTP frame from the device on :8090, but clawcam (Rust) doesn't
+    // run an image server — the live view goes through mediamtx (HLS/WebRTC)
+    // when the stream is up.
     snap.hidden = false; ph.hidden = true;
-    snap.onload = () => { age.textContent = "jpeg"; ph.hidden = true; };
-    snap.onerror = () => {
-      snap.onerror = null;
-      snap.onload = null;
-      loadLastSnapshot(device, snap, ph, age);
-    };
-    snap.src = jpegUrl;
+    loadLastSnapshot(device, snap, ph, age);
   }
 }
 

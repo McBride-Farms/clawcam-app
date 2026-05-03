@@ -168,28 +168,6 @@ export function buildRouter() {
     res.json({ event: ev, phases });
   });
 
-  r.get("/api/devices/:host/latest.jpg", requireAuth, async (req, res) => {
-    const host = req.params.host;
-    const dev = registeredDevice(host);
-    if (!dev) return res.status(404).json({ error: "device not registered" });
-    const port = parseInt(req.query.port || "8090", 10);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      return res.status(400).json({ error: "bad port" });
-    }
-    try {
-      const upstream = await fetch(`http://${dev.host}:${port}/latest.jpg`, {
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!upstream.ok) return res.status(upstream.status).end();
-      res.setHeader("Content-Type", "image/jpeg");
-      res.setHeader("Cache-Control", "no-store");
-      const buf = Buffer.from(await upstream.arrayBuffer());
-      res.end(buf);
-    } catch (e) {
-      res.status(502).json({ error: String(e.message || e) });
-    }
-  });
-
   r.post("/api/devices/:host/ptz", requireAuth, express.json(), async (req, res) => {
     const host = req.params.host;
     const dev = registeredDevice(host);
