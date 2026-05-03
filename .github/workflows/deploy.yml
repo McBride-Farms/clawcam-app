@@ -41,8 +41,20 @@ jobs:
         env:
           DATA_DIR: ${{ secrets.DEPLOY_DATA_DIR }}
           ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+          CERT_DIR: ${{ secrets.DEPLOY_CERT_DIR }}
         run: |
           docker rm -f clawcam-app 2>/dev/null || true
+          # Cert mount is opt-in via DEPLOY_CERT_DIR secret (kept out of
+          # committed yaml so the path convention doesn't leak). When unset
+          # the container runs HTTP-only — the app already falls back to
+          # plain HTTP when CLAWCAM_APP_TLS_CERT_DIR isn't provided.
+          tls_args=()
+          if [ -n "$CERT_DIR" ]; then
+            tls_args+=(
+              -v "$CERT_DIR":/etc/ssl/clawcam-app:ro
+              -e CLAWCAM_APP_TLS_CERT_DIR=/etc/ssl/clawcam-app
+            )
+          fi
           docker run -d \
             --name clawcam-app \
             --restart unless-stopped \
@@ -51,10 +63,9 @@ jobs:
             --mac-address 02:42:c0:a8:01:f1 \
             --cap-add NET_ADMIN \
             -v "$DATA_DIR":/app/data \
-            -v ***REDACTED-CERT-DIR***/clawcam-app.mcbridefarm.com:/etc/ssl/clawcam-app:ro \
+            "${tls_args[@]}" \
             --env-file "$ENV_FILE" \
             -e CLAWCAM_APP_DATA_DIR=/app/data \
-            -e CLAWCAM_APP_TLS_CERT_DIR=/etc/ssl/clawcam-app \
             clawcam-app:latest
 
       - name: Smoke test
