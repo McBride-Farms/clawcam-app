@@ -119,8 +119,8 @@ function wireTilePtz(tile, host) {
     switch (action) {
       case "up":       return { tilt: +1, duration_ms: BURST_MS };
       case "down":     return { tilt: -1, duration_ms: BURST_MS };
-      case "left":     return { pan: -1,  duration_ms: BURST_MS };
-      case "right":    return { pan: +1,  duration_ms: BURST_MS };
+      case "left":     return { pan: +1,  duration_ms: BURST_MS };
+      case "right":    return { pan: -1,  duration_ms: BURST_MS };
       case "zoom-in":  return { zoom: +1, duration_ms: BURST_MS };
       case "zoom-out": return { zoom: -1, duration_ms: BURST_MS };
       default: return null;
@@ -201,7 +201,10 @@ function wireTileJoystick(tile, host) {
 
   function dirFromNormalized(nx, ny) {
     return {
-      pan:  Math.abs(nx) < DEADZONE ? 0 : (nx > 0 ? +1 : -1),
+      // Camera mount is mirrored relative to the operator's view, so we
+      // invert pan: dragging the joystick right sends pan=-1 which moves
+      // the camera's frame leftward (matching what the operator expects).
+      pan:  Math.abs(nx) < DEADZONE ? 0 : (nx > 0 ? -1 : +1),
       tilt: Math.abs(ny) < DEADZONE ? 0 : (ny > 0 ? -1 : +1), // screen-y grows down, tilt=+1 is up
     };
   }
