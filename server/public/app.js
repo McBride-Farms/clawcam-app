@@ -387,11 +387,17 @@ function applyTileStream(name, stream) {
     if (entry.live) return; // already attached
     entry.live = true;
     snap.hidden = true; ph.hidden = true; video.hidden = false;
-    const hlsUrl = `${liveState.cfg.hls_base}/${encodeURIComponent(name)}/index.m3u8`;
+    // ABR master playlist served by clawcam-app itself (assembled from the
+    // mediamtx ladder variants `<name>_1080|720|480|360`). The single-
+    // rendition mediamtx HLS endpoint stays as the fallback for cameras
+    // whose ladder hasn't propagated yet (or if /api/streams/.../master.m3u8
+    // returns 503 — the player handles that downgrade automatically).
+    const masterUrl = `/api/streams/${encodeURIComponent(name)}/master.m3u8`;
+    const hlsFallbackUrl = `${liveState.cfg.hls_base}/${encodeURIComponent(name)}/index.m3u8`;
     const whepUrl = liveState.cfg.webrtc_base
       ? `${liveState.cfg.webrtc_base}/${encodeURIComponent(name)}/whep`
       : null;
-    const player = attachLiveStream(video, { hlsUrl, whepUrl },
+    const player = attachLiveStream(video, { hlsUrl: masterUrl, hlsFallbackUrl, whepUrl },
       () => {
         dot.classList.remove("dead", "reconnecting");
         age.textContent = entry.transport === "webrtc" ? "live · rtc" : "live";
@@ -553,11 +559,28 @@ function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
     }
   };
 
-  const attachHlsInner = () => {
+  const attachHlsInner = async () => {
     onTransport?.("hls");
+    // Prefer the ABR master playlist; if it's not yet available (the ladder
+    // hasn't propagated, or the source has no transcoder behind it), fall
+    // back to the single-rendition mediamtx HLS URL. A HEAD probe is cheap
+    // and avoids HLS.js retry loops against a known-503.
+    let chosen = urls.hlsUrl;
+    if (urls.hlsFallbackUrl && urls.hlsUrl !== urls.hlsFallbackUrl) {
+      try {
+        const probe = await fetch(urls.hlsUrl, {
+          method: "HEAD",
+          signal: AbortSignal.timeout(2000),
+        });
+        if (!probe.ok) chosen = urls.hlsFallbackUrl;
+      } catch {
+        chosen = urls.hlsFallbackUrl;
+      }
+    }
+    if (stopped) return;
     if (window.Hls && window.Hls.isSupported()) {
       hls = new Hls({ liveDurationInfinity: true, lowLatencyMode: true });
-      hls.loadSource(urls.hlsUrl);
+      hls.loadSource(chosen);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () =>
         video.play().then(() => {
@@ -568,7 +591,7 @@ function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
       hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail(); });
       liveState.hlsInstances.push(hls);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = urls.hlsUrl;
+      video.src = chosen;
       video.addEventListener("loadeddata", () => { retryDelayMs = 1000; onPlay(); });
       video.addEventListener("error", fail);
     } else {

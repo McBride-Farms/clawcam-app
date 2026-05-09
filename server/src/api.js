@@ -72,14 +72,90 @@ export function buildRouter() {
     const defaultHls = `http://${host}:8888`;
     const defaultWrtc = `http://${host}:8889`;
     const defaultRtsp = `rtsp://${host}:8554`;
+    // Absolute URL pattern for the ABR master playlist served by this
+    // server. Clients substitute {name} with the camera path. When the
+    // ladder has no live variants, the endpoint returns 503 — clients
+    // are expected to fall back to `<hls_base>/<name>/index.m3u8`.
+    const hlsMasterTemplate =
+      `${req.protocol}://${req.headers.host}/api/streams/{name}/master.m3u8`;
     res.json({
       hls_base: config.hlsBase || defaultHls,
+      hls_master_url_template: hlsMasterTemplate,
       webrtc_base: config.webrtcBase || defaultWrtc,
       rtsp_base: config.rtspBase || defaultRtsp,
       webhook_url:
         config.webhookUrl ||
         `${req.protocol}://${req.headers.host}/hooks/clawcam`,
     });
+  });
+
+  // ABR master playlist for a source path. Discovers live ladder variants
+  // (`<source>_1080|720|480|360`) via mediamtx's API, extracts each variant's
+  // STREAM-INF line + media URI from its single-rendition index.m3u8, and
+  // composes them into one master playlist for HLS.js / ExoPlayer to switch
+  // between. Returns 503 if no variants are live; the player should fall
+  // back to the single-rendition `<source>/index.m3u8` in that case.
+  r.get("/api/streams/:source/master.m3u8", async (req, res) => {
+    const source = req.params.source;
+    if (!HOST_RE.test(source)) return res.status(400).end();
+
+    const ladderRungs = ["1080", "720", "480", "360"];
+    let live = new Set();
+    try {
+      const upstream = await fetch(`${config.mediamtxApi}/v3/paths/list`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (upstream.ok) {
+        const data = await upstream.json();
+        for (const p of data.items || []) {
+          if (p.ready) live.add(p.name);
+        }
+      }
+    } catch {
+      // mediamtx unreachable — fall through; we'll return 503 if no rungs.
+    }
+
+    const hlsBase =
+      config.hlsBase ||
+      `${req.protocol}://${req.headers.host?.split(":")[0] || "localhost"}`;
+
+    const lines = ["#EXTM3U", "#EXT-X-VERSION:6", "#EXT-X-INDEPENDENT-SEGMENTS"];
+    for (const rung of ladderRungs) {
+      const variantPath = `${source}_${rung}`;
+      if (!live.has(variantPath)) continue;
+      try {
+        const indexUrl = `${hlsBase}/${variantPath}/index.m3u8`;
+        const r2 = await fetch(indexUrl, { signal: AbortSignal.timeout(2000) });
+        if (!r2.ok) continue;
+        const text = await r2.text();
+        // Each variant index.m3u8 from mediamtx looks like:
+        //   #EXTM3U
+        //   #EXT-X-VERSION:9
+        //   #EXT-X-INDEPENDENT-SEGMENTS
+        //
+        //   #EXT-X-STREAM-INF:BANDWIDTH=...,RESOLUTION=...,CODECS=...
+        //   video1_stream.m3u8
+        const sm = text.match(/#EXT-X-STREAM-INF:[^\n]+\r?\n([^\r\n]+)/);
+        if (!sm) continue;
+        const streamInf = sm[0].split(/\r?\n/)[0];
+        const uri = sm[1].trim();
+        const absoluteUri = uri.startsWith("http")
+          ? uri
+          : `${hlsBase}/${variantPath}/${uri}`;
+        lines.push("", streamInf, absoluteUri);
+      } catch {
+        // Variant fetch failed — skip this rung; others may still work.
+      }
+    }
+
+    if (lines.length <= 3) {
+      return res.status(503).json({ error: "no ABR variants available" });
+    }
+
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(lines.join("\n") + "\n");
   });
 
   r.get("/api/streams", requireAuth, async (_req, res) => {
