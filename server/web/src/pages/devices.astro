@@ -1,0 +1,11 @@
+---
+import Layout from "~/layouts/Layout.astro";
+import DevicesList from "~/components/DevicesList";
+---
+
+<Layout route="devices" title="Devices · clawcam">
+  <section class="devices">
+    <h2>Devices</h2>
+    <DevicesList client:load />
+  </section>
+</Layout>

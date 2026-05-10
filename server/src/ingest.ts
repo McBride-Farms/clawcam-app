@@ -4,8 +4,14 @@ import crypto from "node:crypto";
 import { config } from "./config.js";
 import { db, stmts, upsertDevice } from "./db.js";
 import { broadcast } from "./sse.js";
+import type { Device, EventRow, WebhookPayload } from "../shared/types.js";
 
-function decodeBase64ToFile(b64, dir, ext) {
+interface DecodedFile {
+  name: string;
+  bytes: number;
+}
+
+function decodeBase64ToFile(b64: string, dir: string, ext: string): DecodedFile {
   const buf = Buffer.from(b64, "base64");
   const name = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}.${ext}`;
   const full = path.join(dir, name);
@@ -13,13 +19,13 @@ function decodeBase64ToFile(b64, dir, ext) {
   return { name, bytes: buf.length };
 }
 
-function classesFromPredictions(preds) {
+function classesFromPredictions(preds: WebhookPayload["predictions"] | undefined): string {
   if (!Array.isArray(preds)) return "";
   return [...new Set(preds.map((p) => p.class))].join(",");
 }
 
-function sanitizeForStore(payload) {
-  const clone = { ...payload };
+function sanitizeForStore(payload: WebhookPayload): Record<string, unknown> {
+  const clone: Record<string, unknown> = { ...payload };
   delete clone.image;
   delete clone.clip;
   delete clone.pre_frames;
@@ -30,15 +36,19 @@ function sanitizeForStore(payload) {
 // its canonical host ("pond-cam.mcbridefarm.com"), rewrite to the canonical
 // form. Without this, a synthetic post using the short hostname creates a
 // second `devices` row alongside the real FQDN row and the UI shows a duplicate.
-function canonicalizeHost(host) {
+function canonicalizeHost(host: string): string {
   if (!host) return host;
-  const match = stmts.listDevices
-    .all()
-    .find((d) => d.name === host && d.host !== host);
+  const rows = stmts.listDevices.all() as Device[];
+  const match = rows.find((d) => d.name === host && d.host !== host);
   return match ? match.host : host;
 }
 
-export function ingestEvent(payload) {
+export interface IngestResult {
+  event_id: string;
+  phase: string;
+}
+
+export function ingestEvent(payload: WebhookPayload): IngestResult {
   const now = Math.floor(Date.now() / 1000);
   const host = canonicalizeHost(payload.host || "unknown");
   const phase = payload.event_phase || "start";
@@ -51,10 +61,10 @@ export function ingestEvent(payload) {
 
   upsertDevice(host, now);
 
-  const existing = stmts.getEvent.get(eventId);
+  const existing = stmts.getEvent.get(eventId) as EventRow | undefined;
 
-  let imageFile = existing?.image_file || null;
-  let clipFile = existing?.clip_file || null;
+  let imageFile: string | null = existing?.image_file || null;
+  let clipFile: string | null = existing?.clip_file || null;
 
   if (payload.image && !imageFile) {
     const { name } = decodeBase64ToFile(payload.image, config.mediaDir, "jpg");
@@ -65,7 +75,7 @@ export function ingestEvent(payload) {
     clipFile = name;
   }
 
-  const preFrames = [];
+  const preFrames: string[] = [];
   if (Array.isArray(payload.pre_frames)) {
     for (const b64 of payload.pre_frames) {
       const { name } = decodeBase64ToFile(b64, config.mediaDir, "jpg");
@@ -81,19 +91,21 @@ export function ingestEvent(payload) {
   // (clawcam_fanout.js calls the configured vision model on grunt-node2 and
   // attaches caption/interest/action to the payload before forwarding here).
   // Empty/missing fields normalize to NULL so SQL semantics work.
-  const visionCaption =
+  const visionCaption: string | null =
     typeof payload.vision_caption === "string" && payload.vision_caption.trim()
       ? payload.vision_caption.trim()
       : null;
-  const visionInterest =
+  const visionInterest: number | null =
     Number.isInteger(payload.vision_interest_level) &&
-    payload.vision_interest_level >= 0 &&
-    payload.vision_interest_level <= 3
-      ? payload.vision_interest_level
+    payload.vision_interest_level! >= 0 &&
+    payload.vision_interest_level! <= 3
+      ? payload.vision_interest_level!
       : null;
-  const visionAction = ["none", "investigate", "alert"].includes(payload.vision_suggested_action)
-    ? payload.vision_suggested_action
-    : null;
+  const visionAction: string | null =
+    payload.vision_suggested_action !== undefined &&
+    ["none", "investigate", "alert"].includes(payload.vision_suggested_action)
+      ? payload.vision_suggested_action
+      : null;
 
   if (!existing) {
     stmts.insertEvent.run({
@@ -142,9 +154,9 @@ export function ingestEvent(payload) {
     payload: JSON.stringify(storedPayload),
   });
 
-  const evRow = stmts.getEvent.get(eventId);
+  const evRow = stmts.getEvent.get(eventId) as EventRow | undefined;
   broadcast("event", {
-    ...evRow,
+    ...(evRow ?? {}),
     phase,
     detail,
     predictions: payload.predictions || [],
@@ -153,19 +165,26 @@ export function ingestEvent(payload) {
   return { event_id: eventId, phase };
 }
 
+interface ReapRow {
+  event_id: string;
+  host: string;
+  started_epoch: number;
+  updated_at: number;
+}
+
 // Close events that were marked "active" but haven't received a webhook update
 // in `staleSeconds`. Without this, events stranded by a mid-event clawcam restart
 // (SIGTERM between start and end) stay "active" forever with no clip. The
 // clawcam service also tries to flush an end-phase webhook on shutdown, so this
 // is a safety net for cases where that flush fails or never ran.
-export function reapStaleEvents(staleSeconds = 300) {
+export function reapStaleEvents(staleSeconds = 300): number {
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - staleSeconds;
   const toReap = db
     .prepare(
       `SELECT event_id, host, started_epoch, updated_at FROM events WHERE status = 'active' AND updated_at < ?`
     )
-    .all(cutoff);
+    .all(cutoff) as ReapRow[];
   if (toReap.length === 0) return 0;
   const update = db.prepare(`
     UPDATE events
@@ -177,22 +196,28 @@ export function reapStaleEvents(staleSeconds = 300) {
   `);
   for (const row of toReap) {
     update.run(now, row.event_id);
-    const evRow = stmts.getEvent.get(row.event_id);
-    broadcast("event", { ...evRow, phase: "end", detail: "stale_close" });
+    const evRow = stmts.getEvent.get(row.event_id) as EventRow | undefined;
+    broadcast("event", { ...(evRow ?? {}), phase: "end", detail: "stale_close" });
   }
   return toReap.length;
 }
 
-export function pruneOldEvents() {
+interface PruneRow {
+  image_file: string | null;
+  clip_file: string | null;
+}
+interface PrunePhaseRow { payload: string }
+
+export function pruneOldEvents(): number {
   const cutoff = Math.floor(Date.now() / 1000) - config.retentionDays * 86400;
   const toDelete = db
     .prepare(`SELECT image_file, clip_file FROM events WHERE started_epoch < ?`)
-    .all(cutoff);
+    .all(cutoff) as PruneRow[];
   const extra = db
     .prepare(
       `SELECT payload FROM phases WHERE event_id IN (SELECT event_id FROM events WHERE started_epoch < ?)`
     )
-    .all(cutoff);
+    .all(cutoff) as PrunePhaseRow[];
   const res = stmts.deleteOldEvents.run(cutoff);
   for (const row of toDelete) {
     for (const f of [row.image_file, row.clip_file]) {
@@ -204,7 +229,7 @@ export function pruneOldEvents() {
   }
   for (const row of extra) {
     try {
-      const p = JSON.parse(row.payload);
+      const p = JSON.parse(row.payload) as { pre_frame_files?: string[] };
       for (const f of p.pre_frame_files || []) {
         try {
           fs.unlinkSync(path.join(config.mediaDir, f));

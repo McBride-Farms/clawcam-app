@@ -1,5 +1,6 @@
 import { defineConfig } from "astro/config";
 import solid from "@astrojs/solid-js";
+import { fileURLToPath } from "node:url";
 
 // Static output: each page renders to HTML at build time. Solid components
 // inside the pages hydrate on the client; the dynamic state (event list,
@@ -15,6 +16,14 @@ export default defineConfig({
     format: "file",
   },
   vite: {
+    resolve: {
+      alias: {
+        // Vite alias mirroring the tsconfig `paths` so runtime imports
+        // resolve the same way the typechecker does.
+        "@shared": fileURLToPath(new URL("../shared", import.meta.url)),
+        "~": fileURLToPath(new URL("./src", import.meta.url)),
+      },
+    },
     server: {
       // During `astro dev`, proxy /api/*, /hooks/*, /telemetry/*, /media/*,
       // and the SSE /stream endpoint to the live Express server at :8080.

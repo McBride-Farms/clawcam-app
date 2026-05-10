@@ -1,0 +1,21 @@
+---
+import Layout from "~/layouts/Layout.astro";
+import EventDetailWrapper from "~/components/EventDetailWrapper";
+
+// Static-output friendly: event id arrives via the query string
+// (`/event?id=<uuid>`) so we don't need to enumerate every id at build
+// time. The Solid wrapper reads it from `location.search` after hydration.
+---
+
+<Layout route="events" title="Event · clawcam">
+  <section class="detail">
+    <button class="back" type="button" id="detail-back">&larr; back</button>
+    <EventDetailWrapper client:load />
+  </section>
+</Layout>
+
+<script is:inline>
+  document.getElementById("detail-back")?.addEventListener("click", () => {
+    history.back();
+  });
+</script>

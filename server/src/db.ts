@@ -50,8 +50,10 @@ CREATE INDEX IF NOT EXISTS phases_event ON phases(event_id, epoch);
 // Lightweight migration for DBs created before later columns were added.
 // SQLite has no IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we feature-detect.
 {
-  const ensureCol = (table, name, type) => {
-    const cols = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  interface ColumnInfo { name: string }
+  const ensureCol = (table: string, name: string, type: string): void => {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as ColumnInfo[];
+    const cols = new Set(rows.map((c) => c.name));
     if (!cols.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
   };
   ensureCol("events", "vision_caption", "TEXT");
@@ -142,6 +144,6 @@ export const stmts = {
   ),
 };
 
-export function upsertDevice(host, now) {
+export function upsertDevice(host: string, now: number): void {
   stmts.upsertDevice.run({ host, name: null, now });
 }

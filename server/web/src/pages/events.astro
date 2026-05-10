@@ -1,0 +1,10 @@
+---
+import Layout from "~/layouts/Layout.astro";
+import EventsList from "~/components/EventsList";
+---
+
+<Layout route="events" title="Events · clawcam">
+  <section class="events-view">
+    <EventsList client:load />
+  </section>
+</Layout>

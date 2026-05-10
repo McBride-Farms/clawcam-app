@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type Request, type Response } from "express";
 import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
@@ -10,7 +10,16 @@ import { sseHandler } from "./sse.js";
 import { pruneOldEvents, reapStaleEvents } from "./ingest.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const publicDir = path.resolve(__dirname, "..", "public");
+
+// Web bundle: prefer the new Astro+Solid build at server/web/dist; fall
+// back to the legacy server/public/ if the new bundle hasn't been built
+// yet (e.g. a partial rebuild). Once migration lands, the fallback can
+// be removed and server/public/ deleted.
+const webDir = (() => {
+  const astroDist = path.resolve(__dirname, "..", "web", "dist");
+  if (fs.existsSync(path.join(astroDist, "index.html"))) return astroDist;
+  return path.resolve(__dirname, "..", "public");
+})();
 
 const app = express();
 app.disable("x-powered-by");
@@ -18,15 +27,20 @@ app.set("trust proxy", true);
 
 app.use((req, _res, next) => {
   const t = Date.now();
-  const done = () => console.log(`${req.method} ${redactUrl(req.url)} -> ${Date.now() - t}ms`);
+  const done = (): void => {
+    console.log(`${req.method} ${redactUrl(req.url)} -> ${Date.now() - t}ms`);
+  };
   req.on("end", done);
   next();
 });
 
 app.get("/api/stream", requireAuth, sseHandler);
 app.use(buildRouter());
+
+app.get("/", (_req, res) => res.redirect("/live"));
+
 app.use(
-  express.static(publicDir, {
+  express.static(webDir, {
     fallthrough: true,
     index: "index.html",
     setHeaders: (res, p) => {
@@ -34,24 +48,43 @@ app.use(
         res.setHeader("Cache-Control", "no-cache");
       }
     },
-  })
+  }),
 );
-app.get("*", (_req, res) => {
-  res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(publicDir, "index.html"));
+
+// Astro file-based routing produces /events.html, /devices.html, etc.
+// When the browser navigates to /events the URL has no extension; map it
+// to the matching .html so static files line up with Astro's routes.
+app.get(/^\/[a-z][a-z0-9_-]*$/, (req: Request, res: Response, next) => {
+  const file = path.join(webDir, `${req.path.slice(1)}.html`);
+  fs.access(file, fs.constants.R_OK, (err) => {
+    if (err) return next();
+    res.setHeader("Cache-Control", "no-cache");
+    res.sendFile(file);
+  });
 });
 
-const tlsCreds = config.tlsCertDir && (() => {
-  try {
-    return {
-      key: fs.readFileSync(path.join(config.tlsCertDir, "key.pem")),
-      cert: fs.readFileSync(path.join(config.tlsCertDir, "fullchain.pem")),
-    };
-  } catch (err) {
-    console.error(`[tls] cert dir ${config.tlsCertDir} unreadable, falling back to HTTP: ${err.message}`);
-    return null;
-  }
-})();
+app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(webDir, "index.html"));
+});
+
+const tlsCreds = config.tlsCertDir
+  ? (() => {
+      try {
+        return {
+          key: fs.readFileSync(path.join(config.tlsCertDir, "key.pem")),
+          cert: fs.readFileSync(path.join(config.tlsCertDir, "fullchain.pem")),
+        };
+      } catch (err) {
+        console.error(
+          `[tls] cert dir ${config.tlsCertDir} unreadable, falling back to HTTP: ${
+            (err as Error).message
+          }`,
+        );
+        return null;
+      }
+    })()
+  : null;
 
 if (tlsCreds) {
   https.createServer(tlsCreds, app).listen(config.tlsPort, config.host, () => {
@@ -59,7 +92,7 @@ if (tlsCreds) {
   });
   const redirect = express();
   redirect.use((req, res) => {
-    const host = (req.headers.host || "").split(":")[0] || "localhost";
+    const host = ((req.headers.host as string | undefined) || "").split(":")[0] || "localhost";
     res.redirect(301, `https://${host}${req.url}`);
   });
   http.createServer(redirect).listen(config.port, config.host, () => {
@@ -70,6 +103,7 @@ if (tlsCreds) {
     console.log(`clawcam-app HTTP on ${config.host}:${config.port}`);
   });
 }
+console.log(`web bundle: ${webDir}`);
 console.log(`data dir: ${config.dataDir}`);
 console.log(`retention: ${config.retentionDays}d`);
 console.log(`auth token: ${config.token ? "configured" : "DISABLED (open)"}`);
@@ -92,6 +126,6 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-function redactUrl(url) {
+function redactUrl(url: string): string {
   return url.replace(/([?&]token=)[^&]+/i, "$1[redacted]");
 }
