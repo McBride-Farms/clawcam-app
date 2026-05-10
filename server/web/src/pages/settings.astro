@@ -1,0 +1,43 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout route="settings" title="Settings · clawcam">
+  <section class="settings">
+    <h2>Settings</h2>
+    <p class="hint">
+      Point <code>clawcam</code> webhook at this server. The URL below works for
+      devices on this LAN.
+    </p>
+    <div class="kv">
+      <div>Webhook URL</div>
+      <code id="hook-url"></code>
+    </div>
+    <div class="kv">
+      <div>Stream URL</div>
+      <code id="stream-url"></code>
+    </div>
+    <h3>Register a clawcam device</h3>
+    <pre id="clawcam-example"></pre>
+  </section>
+
+  <script is:inline>
+    // Settings is purely presentational — nothing to load, nothing to click.
+    // We just need the URLs derived from the page's own origin so the user
+    // can copy-paste them. Inline so it runs without a module fetch.
+    (function () {
+      const base = location.origin;
+      const hook = document.getElementById("hook-url");
+      const stream = document.getElementById("stream-url");
+      const example = document.getElementById("clawcam-example");
+      if (hook) hook.textContent = `${base}/hooks/clawcam`;
+      if (stream) stream.textContent = `${base}/api/stream`;
+      if (example) {
+        example.textContent =
+          `clawcam setup <name> \\\n` +
+          `  --webhook ${base}/hooks/clawcam \\\n` +
+          `  --webhook-token YOUR_SHARED_TOKEN`;
+      }
+    })();
+  </script>
+</Layout>

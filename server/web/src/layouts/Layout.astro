@@ -1,0 +1,59 @@
+---
+import "../styles/global.css";
+import LiveStatus from "../components/LiveStatus";
+
+interface Props {
+  /** Active route slug, used to highlight the topbar nav link. */
+  route: "live" | "events" | "devices" | "settings";
+  /** Page title (browser tab + assistive tech). Falls back to "clawcam". */
+  title?: string;
+}
+
+const { route, title = "clawcam" } = Astro.props;
+
+const navItems: Array<{ href: string; label: string; route: Props["route"] }> = [
+  { href: "/live", label: "Live", route: "live" },
+  { href: "/events", label: "Events", route: "events" },
+  { href: "/devices", label: "Devices", route: "devices" },
+  { href: "/settings", label: "Settings", route: "settings" },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='%23e94560'/></svg>"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <span>clawcam</span>
+      </div>
+      <nav class="nav">
+        {
+          navItems.map((item) => (
+            <a
+              href={item.href}
+              data-route={item.route}
+              class={item.route === route ? "active" : ""}
+            >
+              {item.label}
+            </a>
+          ))
+        }
+      </nav>
+      <LiveStatus client:load />
+    </header>
+
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>

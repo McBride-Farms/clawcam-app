@@ -1,0 +1,17 @@
+---
+// Static-output landing page: meta-refresh to /live. Express also serves
+// "/" → "/live" as a 302, so this is just a belt-and-suspenders fallback
+// for direct file serves (e.g. previewing the dist/ tree locally).
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="refresh" content="0; url=/live" />
+    <title>clawcam</title>
+  </head>
+  <body>
+    <p><a href="/live">Continue to live view…</a></p>
+  </body>
+</html>
