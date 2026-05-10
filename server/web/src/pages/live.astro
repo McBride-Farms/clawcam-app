@@ -1,0 +1,13 @@
+---
+import Layout from "~/layouts/Layout.astro";
+import LiveGrid from "~/components/LiveGrid";
+
+// The Live page is a thin shell: LiveGrid owns the loading, polling, SSE
+// subscription, focus toggle button, and flash toast. Hydrating with
+// `client:load` so the WebRTC/HLS attach kicks off as soon as the JS
+// arrives — there's no point waiting for visibility.
+---
+
+<Layout route="live" title="Live · clawcam">
+  <LiveGrid client:load />
+</Layout>
