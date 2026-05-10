@@ -91,6 +91,22 @@ function route() {
 
 let liveState = { hlsInstances: [], pollTimer: null, tiles: new Map(), cfg: null };
 
+// Single global click listener that closes any open quality menu when the
+// user clicks outside. Registered once on first call so reattach cycles
+// don't accumulate listeners on the document.
+let qualityMenuCloseRegistered = false;
+function registerQualityMenuClose() {
+  if (qualityMenuCloseRegistered) return;
+  qualityMenuCloseRegistered = true;
+  document.addEventListener("click", () => {
+    document.querySelectorAll(".live-tile .quality-menu:not([hidden])").forEach((m) => {
+      m.hidden = true;
+      const btn = m.parentElement?.querySelector(".quality-btn");
+      if (btn) btn.setAttribute("aria-expanded", "false");
+    });
+  });
+}
+
 function sendPtz(host, body) {
   // Fire-and-forget — never block the UI on the network round-trip. The
   // device returns 200 immediately after writing the initial VISCA byte
@@ -315,6 +331,10 @@ async function renderLive() {
         <div class="ph" hidden>offline</div>
         <svg class="overlay" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
         <div class="label"><span class="dot dead"></span><span>${esc(name)}</span></div>
+        <div class="quality" data-stop-focus hidden>
+          <button class="quality-btn" type="button" aria-haspopup="true" aria-expanded="false">—</button>
+          <div class="quality-menu" hidden role="menu"></div>
+        </div>
         <div class="age">—</div>
         <div class="ptz" data-stop-focus title="Pan / Tilt / Zoom">
           <div class="ptz-joystick" aria-label="Pan/tilt joystick">
@@ -382,6 +402,9 @@ function applyTileStream(name, stream) {
   const ph = tile.querySelector(".ph");
   const dot = tile.querySelector(".label .dot");
   const age = tile.querySelector(".age");
+  const qualityWrap = tile.querySelector(".quality");
+  const qualityBtn = tile.querySelector(".quality-btn");
+  const qualityMenu = tile.querySelector(".quality-menu");
 
   if (stream?.ready) {
     if (entry.live) return; // already attached
@@ -397,6 +420,25 @@ function applyTileStream(name, stream) {
     const whepUrl = liveState.cfg.webrtc_base
       ? `${liveState.cfg.webrtc_base}/${encodeURIComponent(name)}/whep`
       : null;
+
+    // Persist per-camera manual quality choice across reloads (and across
+    // reconnects — the choice is reapplied on every fresh HLS attach).
+    const qualityKey = `clawcam.quality.${name}`;
+    let savedLevelHeight = null;
+    try {
+      const raw = localStorage.getItem(qualityKey);
+      if (raw === "auto") savedLevelHeight = -1;
+      else if (raw) {
+        const n = parseInt(raw, 10);
+        if (Number.isFinite(n) && n > 0) savedLevelHeight = n;
+      }
+    } catch {}
+
+    const renderQualityButton = (mode, label) => {
+      qualityBtn.textContent = label;
+      qualityBtn.dataset.mode = mode;
+    };
+
     const player = attachLiveStream(video, { hlsUrl: masterUrl, hlsFallbackUrl, whepUrl },
       () => {
         dot.classList.remove("dead", "reconnecting");
@@ -409,13 +451,100 @@ function applyTileStream(name, stream) {
         age.textContent = "reconnecting…";
         age.classList.add("reconnecting");
       },
-      (transport) => { entry.transport = transport; });
+      (transport) => {
+        entry.transport = transport;
+        if (transport === "webrtc") {
+          // WebRTC has no variant ladder — show transport as the readout
+          // and disable the picker.
+          qualityWrap.hidden = false;
+          qualityBtn.disabled = true;
+          renderQualityButton("rtc", "RTC");
+        } else {
+          qualityWrap.hidden = false;
+          qualityBtn.disabled = false;
+        }
+      },
+      {
+        onLevels: (levels) => {
+          // Build the dropdown items — Auto + each variant by height.
+          qualityMenu.innerHTML = "";
+          const mkItem = (label, value, isCurrent) => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "quality-item" + (isCurrent ? " current" : "");
+            b.dataset.value = String(value);
+            b.textContent = label;
+            return b;
+          };
+          qualityMenu.appendChild(mkItem("Auto", "auto", false));
+          // Sort top-down by height for an intuitive list.
+          const sorted = [...levels].sort((a, b) => (b.height || 0) - (a.height || 0));
+          for (const lvl of sorted) {
+            qualityMenu.appendChild(
+              mkItem(`${lvl.height}p`, lvl.height, false),
+            );
+          }
+          // Apply the saved override now that we know what's available.
+          if (savedLevelHeight === -1) {
+            entry.hls?.setLevel?.(-1);
+          } else if (savedLevelHeight) {
+            const match = levels.find((l) => l.height === savedLevelHeight);
+            if (match) entry.hls?.setLevel?.(match.index);
+          }
+        },
+        onLevelChange: ({ height, isAuto, isOverride }) => {
+          if (entry.transport === "webrtc") return;
+          const mode = isOverride ? "manual" : "auto";
+          const label = isAuto && !isOverride
+            ? `Auto · ${height}p`
+            : `${height}p`;
+          renderQualityButton(mode, label);
+          // Reflect the active choice in the open menu (if any).
+          for (const item of qualityMenu.querySelectorAll(".quality-item")) {
+            item.classList.toggle(
+              "current",
+              (isOverride && item.dataset.value === String(height)) ||
+                (!isOverride && item.dataset.value === "auto"),
+            );
+          }
+        },
+      });
     entry.hls = player;
+
+    // Toggle dropdown.
+    qualityBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (qualityBtn.disabled) return;
+      const open = !qualityMenu.hidden;
+      qualityMenu.hidden = open;
+      qualityBtn.setAttribute("aria-expanded", String(!open));
+    };
+    // Pick a level.
+    qualityMenu.onclick = (e) => {
+      const btn = e.target.closest(".quality-item");
+      if (!btn) return;
+      e.stopPropagation();
+      const value = btn.dataset.value;
+      qualityMenu.hidden = true;
+      qualityBtn.setAttribute("aria-expanded", "false");
+      if (value === "auto") {
+        try { localStorage.setItem(qualityKey, "auto"); } catch {}
+        entry.hls?.setLevel?.(-1);
+      } else {
+        const height = parseInt(value, 10);
+        try { localStorage.setItem(qualityKey, String(height)); } catch {}
+        entry.hls?.setLevelByHeight?.(height);
+      }
+    };
+    // Close-on-outside-click is registered globally just once below
+    // (registerQualityMenuClose), so reattaches don't pile up listeners.
+    registerQualityMenuClose();
   } else {
     if (entry.live) {
       try { entry.hls?.destroy?.(); } catch {}
       entry.hls = null; entry.live = false;
     }
+    if (qualityWrap) qualityWrap.hidden = true;
     video.hidden = true;
     dot.classList.add("dead");
     age.textContent = "offline";
@@ -446,7 +575,7 @@ async function loadLastSnapshot(device, imgEl, phEl, ageEl) {
   ageEl.textContent = "offline";
 }
 
-function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
+function attachLiveStream(video, urls, onPlay, onFail, onTransport, qualityCb) {
   // Tries WebRTC (WHEP against MediaMTX) first for sub-second latency, falls
   // back to HLS on failure. Wraps both with exponential backoff reconnection
   // so a transient stream blip recovers on its own. Returns a handle with
@@ -582,12 +711,30 @@ function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
       hls = new Hls({ liveDurationInfinity: true, lowLatencyMode: true });
       hls.loadSource(chosen);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () =>
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        // Surface available levels to the picker (height + index).
+        if (qualityCb?.onLevels) {
+          const levels = (hls.levels || []).map((l, i) => ({
+            index: i,
+            height: l.height || 0,
+            bitrate: l.bitrate || 0,
+          }));
+          qualityCb.onLevels(levels);
+        }
         video.play().then(() => {
           retryDelayMs = 1000;
           onPlay();
-        }).catch(fail)
-      );
+        }).catch(fail);
+      });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+        const lvl = hls?.levels?.[data.level];
+        if (!lvl || !qualityCb?.onLevelChange) return;
+        qualityCb.onLevelChange({
+          height: lvl.height || 0,
+          isAuto: !!hls.autoLevelEnabled,
+          isOverride: !hls.autoLevelEnabled,
+        });
+      });
       hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail(); });
       liveState.hlsInstances.push(hls);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -619,6 +766,24 @@ function attachLiveStream(video, urls, onPlay, onFail, onTransport) {
       clearTimeout(retryTimer);
       cleanup();
       if (video.srcObject) { try { video.srcObject = null; } catch {} }
+    },
+    // Pin to a specific HLS level by index, or pass -1 for auto. No-op if
+    // we're currently on WebRTC or native HLS playback (Safari) where the
+    // app has no control over variant selection.
+    setLevel: (idx) => {
+      if (!hls) return;
+      hls.currentLevel = typeof idx === "number" ? idx : -1;
+    },
+    // Convenience: pin by rendition height (e.g. 720) so callers don't
+    // have to know the index ordering. -1/0 falls back to auto.
+    setLevelByHeight: (height) => {
+      if (!hls) return;
+      if (!height || height < 0) {
+        hls.currentLevel = -1;
+        return;
+      }
+      const i = (hls.levels || []).findIndex((l) => l.height === height);
+      if (i >= 0) hls.currentLevel = i;
     },
   };
 }
