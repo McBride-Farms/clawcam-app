@@ -15,7 +15,12 @@ import { execFile } from "node:child_process";
 const VISION_URL =
   process.env.CLAWCAM_APP_VISION_URL ||
   "http://grunt-node2.mcbridefarm.com:8080/v1/chat/completions";
-const VISION_TIMEOUT_MS = Number(process.env.CLAWCAM_APP_VISION_TIMEOUT_MS) || 8000;
+// Default 20s — Qwen3.5-2B-vision on grunt-node2 CPU encodes a 360px frame
+// in ~4–10s depending on load, occasionally up to ~15s on cold cache. The
+// previous default of 8s was timing out enough real events to make the
+// caption look broken. Override via CLAWCAM_APP_VISION_TIMEOUT_MS for
+// faster GPUs or higher patience.
+const VISION_TIMEOUT_MS = Number(process.env.CLAWCAM_APP_VISION_TIMEOUT_MS) || 20000;
 const VISION_DISABLED = process.env.CLAWCAM_APP_VISION_DISABLE === "1";
 
 // We ask the model for structured JSON (instead of free text) so downstream
