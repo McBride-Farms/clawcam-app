@@ -11,14 +11,22 @@ import { pruneOldEvents, reapStaleEvents } from "./ingest.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Web bundle: prefer the new Astro+Solid build at server/web/dist; fall
-// back to the legacy server/public/ if the new bundle hasn't been built
-// yet (e.g. a partial rebuild). Once migration lands, the fallback can
-// be removed and server/public/ deleted.
+// Web bundle layout differs between dev and production:
+//   dev (tsx src/index.ts)         → __dirname = server/src/      → ../web/dist
+//   prod (node dist/src/index.js)  → __dirname = server/dist/src/ → ../../web/dist
+// Try both and pick whichever holds an index.html.
 const webDir = (() => {
-  const astroDist = path.resolve(__dirname, "..", "web", "dist");
-  if (fs.existsSync(path.join(astroDist, "index.html"))) return astroDist;
-  return path.resolve(__dirname, "..", "public");
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "web", "dist"),
+    path.resolve(__dirname, "..", "web", "dist"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "index.html"))) return c;
+  }
+  // Final fallback to the legacy vanilla bundle, useful only for partial
+  // rebuilds during the migration. Safe to delete once the new build is
+  // proven stable.
+  return path.resolve(__dirname, "..", "..", "public");
 })();
 
 const app = express();
