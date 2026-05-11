@@ -3,6 +3,7 @@ import {
   Show,
   createResource,
   createSignal,
+  onMount,
   type Component,
 } from "solid-js";
 import { api } from "~/lib/api";
@@ -100,7 +101,15 @@ const DeviceCard: Component<{ device: Device }> = (props) => {
 };
 
 const DevicesList: Component = () => {
-  const [data] = createResource<{ devices: Device[] }>(() => api.devices());
+  // Astro runs the component once at static-prerender time. fetch() with a
+  // relative URL throws under Node, baking an error into the HTML. Gate the
+  // resource on a signal that's only flipped on client mount.
+  const [browserReady, setBrowserReady] = createSignal(false);
+  onMount(() => setBrowserReady(true));
+  const [data] = createResource<{ devices: Device[] }, boolean>(
+    browserReady,
+    () => api.devices(),
+  );
 
   return (
     <div>

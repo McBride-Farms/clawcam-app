@@ -114,9 +114,15 @@ const Box: Component<{ p: Detection }> = (props) => {
 // ----------------------------------------------------------------------------
 
 const EventDetail: Component<{ id: string }> = (props) => {
-  const [data] = createResource<EventDetailData, string>(
-    () => props.id,
-    (id) => api.event(id),
+  // Don't fetch during Astro's static-prerender pass — relative URL
+  // fetch under Node throws. Gate the resource on a signal that's only
+  // flipped after the component mounts in the browser. Solid skips the
+  // fetcher whenever the source returns null/false/undefined.
+  const [browserReady, setBrowserReady] = createSignal(false);
+  onMount(() => setBrowserReady(true));
+  const [data] = createResource(
+    () => (browserReady() && props.id ? props.id : null),
+    (id: string) => api.event(id),
   );
 
   return (

@@ -3,6 +3,7 @@ import {
   Show,
   createResource,
   createSignal,
+  onMount,
   type Component,
 } from "solid-js";
 import { api } from "~/lib/api";
@@ -41,15 +42,29 @@ const EventsList: Component = () => {
   // changes, so we fold the nonce into the source tuple.
   const [nonce, setNonce] = createSignal(0);
 
+  // Astro prerenders the component server-side. fetch() with a relative
+  // URL throws under Node, baking an error into the HTML. Both resources
+  // gate on a signal that flips only on client mount so SSR sees the
+  // resource as pending-with-no-source-yet and emits a clean Loading…
+  // placeholder.
+  const [browserReady, setBrowserReady] = createSignal(false);
+  onMount(() => setBrowserReady(true));
+
   // Devices are loaded once for the host filter dropdown. Errors are
   // swallowed (we still want the page to render with "All devices").
-  const [devicesData] = createResource<{ devices: Device[] }>(() =>
-    api.devices().catch(() => ({ devices: [] as Device[] })),
+  const [devicesData] = createResource<{ devices: Device[] }, boolean>(
+    browserReady,
+    () => api.devices().catch(() => ({ devices: [] as Device[] })),
   );
 
   const [eventsData, { refetch }] = createResource(
-    () => ({ host: filterHost(), sinceHours: sinceHours(), nonce: nonce() }),
-    async (src) => {
+    () =>
+      browserReady()
+        ? { host: filterHost(), sinceHours: sinceHours(), nonce: nonce() }
+        : null,
+    async (src: { host: string; sinceHours: number; nonce: number }) => {
+      // Solid skips the fetcher whenever the source returns null, so we
+      // never see a null `src` here — the type is narrowed already.
       const res = await api.events({
         host: src.host || undefined,
         sinceHours: src.sinceHours,
