@@ -29,7 +29,9 @@ RUN npm run build
 # ---- Stage 3: runtime ----
 FROM node:22-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends isc-dhcp-client iproute2 \
+ && apt-get install -y --no-install-recommends \
+      isc-dhcp-client iproute2 \
+      ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

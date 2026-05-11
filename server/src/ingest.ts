@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { config } from "./config.js";
 import { db, stmts, upsertDevice } from "./db.js";
 import { broadcast } from "./sse.js";
+import { qwenVisionObservation } from "./vision.js";
 import type { Device, EventRow, WebhookPayload } from "../shared/types.js";
 
 interface DecodedFile {
@@ -162,7 +163,53 @@ export function ingestEvent(payload: WebhookPayload): IngestResult {
     predictions: payload.predictions || [],
   });
 
+  // Fire the vision call out-of-band so the webhook returns quickly. When
+  // it completes, write the result via updateEventVision (which silently
+  // no-ops if the caption is empty) and re-broadcast so any open clients
+  // pick up the caption without a refresh. Only on the `start` phase —
+  // the snapshot at `end` is the same frame, no point re-running.
+  if (phase === "start" && imageFile && !visionCaption) {
+    void runVisionForEvent(eventId, host, imageFile);
+  }
+
   return { event_id: eventId, phase };
+}
+
+// Async vision pass — invoked fire-and-forget from ingestEvent so the
+// caption arrives a few seconds after the initial event lands without
+// blocking the webhook response. The on-device snapshot is already on
+// disk by this point so we just point Qwen at the file.
+async function runVisionForEvent(
+  eventId: string,
+  host: string,
+  imageFile: string,
+): Promise<void> {
+  try {
+    const dev = stmts.getDevice.get(host) as Device | undefined;
+    const systemPrompt = dev?.system_prompt ?? null;
+    const imagePath = path.join(config.mediaDir, imageFile);
+    const obs = await qwenVisionObservation(imagePath, host, systemPrompt);
+    if (!obs?.caption) return;
+    const now = Math.floor(Date.now() / 1000);
+    stmts.updateEventVision.run({
+      event_id: eventId,
+      vision_caption: obs.caption,
+      vision_interest_level: obs.interest_level,
+      vision_suggested_action: obs.suggested_action,
+      now,
+    });
+    const updated = stmts.getEvent.get(eventId) as EventRow | undefined;
+    if (updated) {
+      broadcast("event", {
+        ...updated,
+        phase: "vision",
+        detail: "ai_vision_caption",
+        predictions: [],
+      });
+    }
+  } catch (e) {
+    console.error(`vision call failed for ${eventId}:`, (e as Error).message);
+  }
 }
 
 interface ReapRow {
