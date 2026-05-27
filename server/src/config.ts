@@ -12,7 +12,13 @@ for (const envFile of candidateEnvFiles) {
   if (envFile && fs.existsSync(envFile)) {
     for (const line of fs.readFileSync(envFile, "utf8").split("\n")) {
       const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+      if (m && process.env[m[1]] === undefined) {
+        let v = m[2];
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+          v = v.slice(1, -1);
+        }
+        process.env[m[1]] = v;
+      }
     }
     break;
   }

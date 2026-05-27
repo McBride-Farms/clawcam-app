@@ -58,11 +58,6 @@ function boxMarkup(p, tx = 6, ty = 22) {
   return `<g><rect x="${left}" y="${top}" width="${w}" height="${h}"/><text x="${left + tx}" y="${top + ty}">${esc(label)}</text></g>`;
 }
 
-function setAuthToken(token) {
-  localStorage.setItem("clawcam_token", token);
-  document.cookie = `clawcam_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax`;
-}
-
 function getAuthToken() {
   return localStorage.getItem("clawcam_token") || "";
 }
@@ -300,8 +295,6 @@ async function renderLive() {
   view.appendChild(document.getElementById("tpl-live").content.cloneNode(true));
   const grid = document.getElementById("live-grid");
   const focusBtn = document.getElementById("live-fullscreen");
-  const cadenceSel = document.querySelector(".cadence");
-  if (cadenceSel) cadenceSel.style.display = "none";
 
   let devices = [], streams = [], cfg = null;
   try {
@@ -821,8 +814,7 @@ async function renderEvents() {
     loadEvents();
   });
   sinceSel.value = String(state.sinceHours);
-  await loadDeviceOptions(hostSel);
-  await loadEvents();
+  await Promise.all([loadDeviceOptions(hostSel), loadEvents()]);
 }
 
 async function loadDeviceOptions(sel) {
@@ -1099,6 +1091,8 @@ function renderSettings() {
 
 function connectStream() {
   if (state.stream) state.stream.close();
+  liveDot.className = "live";
+  liveText.textContent = "connecting…";
   const es = new EventSource("/api/stream");
   state.stream = es;
   // EventSource auto-reconnects on its own, but we want to distinguish a
@@ -1162,6 +1156,7 @@ function drawOverlay(t) {
 }
 
 function estimateVideoDelayMs(entry) {
+  if (entry?.transport === "webrtc") return 300;
   const hls = entry?.hls;
   // hls.js populates `latency` (seconds) for live LL-HLS streams once a few
   // segments have loaded. Before that, fall back to a conservative default

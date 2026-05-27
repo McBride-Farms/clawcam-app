@@ -71,7 +71,7 @@ export function ingestEvent(payload: WebhookPayload): IngestResult {
     const { name } = decodeBase64ToFile(payload.image, config.mediaDir, "jpg");
     imageFile = name;
   }
-  if (payload.clip) {
+  if (payload.clip && !clipFile) {
     const { name } = decodeBase64ToFile(payload.clip, config.mediaDir, "mp4");
     clipFile = name;
   }

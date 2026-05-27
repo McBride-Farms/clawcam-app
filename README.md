@@ -24,7 +24,7 @@ cd server
 CLAWCAM_APP_TOKEN=$(openssl rand -hex 24) bash deploy.sh       # target: <user>@<host>
 ```
 
-MediaMTX runs as a user systemd service on the same host. Install notes: see `deploy-mediamtx.md`.
+MediaMTX runs as a user systemd service on the same host. See https://github.com/bluenviron/mediamtx.
 
 ## Point a Pi at clawcam-app
 

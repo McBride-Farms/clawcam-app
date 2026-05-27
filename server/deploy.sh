@@ -3,7 +3,6 @@ set -euo pipefail
 
 REMOTE=${REMOTE:?set REMOTE=user@host}
 REMOTE_DIR=${REMOTE_DIR:-/home/grunt/clawcam-app}
-TOKEN=${CLAWCAM_APP_TOKEN:-}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_USER="${REMOTE%@*}"
@@ -14,11 +13,6 @@ ssh "$REMOTE" "mkdir -p ${REMOTE_DIR_Q}/server ${REMOTE_DIR_Q}/data/media ~/.con
 rsync -az --delete \
   --exclude node_modules --exclude data --exclude .env \
   "${SCRIPT_DIR}/" "${REMOTE}:${REMOTE_DIR_Q}/server/"
-
-echo "==> writing ${REMOTE_DIR}/server/.env"
-ssh "$REMOTE" "cat > ${REMOTE_DIR_Q}/server/.env && chmod 600 ${REMOTE_DIR_Q}/server/.env" <<EOF
-CLAWCAM_APP_DATA_DIR=${REMOTE_DIR}/data
-EOF
 
 echo "==> installing npm deps"
 ssh "$REMOTE" "bash -lc 'cd ${REMOTE_DIR_Q}/server && . \$HOME/.nvm/nvm.sh && nvm use 22 && npm install --omit=dev'"
@@ -32,4 +26,4 @@ ssh "$REMOTE" "loginctl enable-linger ${REMOTE_USER} 2>/dev/null || echo 'linger
 sleep 1
 echo "==> checking status"
 ssh "$REMOTE" "systemctl --user is-active clawcam-app && curl -fsS http://127.0.0.1:8080/api/health && echo"
-echo "clawcam deployed. Open http://${REMOTE#*@}:8080/"
+echo "clawcam deployed at http://${REMOTE#*@}:8080/"
