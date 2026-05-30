@@ -1,0 +1,63 @@
+# Production run-spec for the clawcam-app container.
+#
+# The container joins an external macvlan network so it gets its own LAN IP
+# and MAC via DHCP, the same way the cameras do. docker-entrypoint.sh runs
+# dhclient on eth0 at start (advertising the container hostname so the DHCP
+# server + resolver publish <hostname> on the LAN domain), which needs
+# NET_ADMIN.
+#
+# Deployment-specific values live in a gitignored .env next to this file;
+# copy .env.example to .env and fill it in. The *_API / *_BASE / *_HOST_DIR /
+# *_NETWORK vars have no defaults on purpose so a missing value fails
+# `docker compose up` loudly instead of letting the stream silently break
+# later (e.g. the ABR master 503ing, or the player falling back from
+# low-latency WebRTC to multi-second HLS).
+#
+# NOTE: prod image clawcam-app:latest is built with a TypeScript compile step
+# (runs `node dist/src/index.js`); server/Dockerfile currently runs
+# `node src/index.js`. Do NOT `--build` against prod until that Dockerfile is
+# reconciled — `docker compose up -d` here reuses the existing image.
+#
+#   docker compose up -d        # recreate from this spec (reuses existing image)
+services:
+  clawcam-app:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: clawcam-app:latest
+    container_name: clawcam-app
+    hostname: clawcam-app          # drives DNS name via dhclient host-name
+    mac_address: ${CLAWCAM_APP_MAC:-}   # pin to keep the same DHCP lease/IP across recreates
+    restart: unless-stopped
+    networks:
+      - lan
+    cap_add:
+      - NET_ADMIN                  # dhclient: flush/assign eth0 on the macvlan
+    environment:
+      CLAWCAM_APP_DATA_DIR: /app/data
+      CLAWCAM_APP_TLS_CERT_DIR: /etc/ssl/clawcam-app
+      CLAWCAM_APP_TOKEN: ${CLAWCAM_APP_TOKEN:-}
+      # mediamtx control API base — discovers which ABR rungs are live.
+      # Required, e.g. http://<mediamtx-host-fqdn>:9997
+      CLAWCAM_APP_MEDIAMTX_API: ${CLAWCAM_APP_MEDIAMTX_API:?set CLAWCAM_APP_MEDIAMTX_API in .env (e.g. http://<mediamtx-host-fqdn>:9997)}
+      # Base URL where mediamtx serves the single-rendition rung playlists
+      # (<base>/<cam>_<height>/index.m3u8). The ABR master fetches these to
+      # build the variant list; the code default is this app's own origin,
+      # which is wrong, so this must be set. e.g. https://<mediamtx-hls-fqdn>
+      CLAWCAM_APP_HLS_BASE: ${CLAWCAM_APP_HLS_BASE:?set CLAWCAM_APP_HLS_BASE in .env (e.g. https://<mediamtx-hls-fqdn>)}
+      # WebRTC (WHEP) base the player uses for the low-latency live view; the
+      # code default is this app's own origin (no WebRTC there), which makes
+      # the player fall back to multi-second HLS. e.g.
+      # https://<mediamtx-webrtc-fqdn>:8889
+      CLAWCAM_APP_WEBRTC_BASE: ${CLAWCAM_APP_WEBRTC_BASE:?set CLAWCAM_APP_WEBRTC_BASE in .env (e.g. https://<mediamtx-webrtc-fqdn>:8889)}
+      # RTSP base advertised to native clients (e.g. the Android app). Same
+      # default pitfall as above. e.g. rtsp://<mediamtx-rtsp-fqdn>:8554
+      CLAWCAM_APP_RTSP_BASE: ${CLAWCAM_APP_RTSP_BASE:?set CLAWCAM_APP_RTSP_BASE in .env (e.g. rtsp://<mediamtx-rtsp-fqdn>:8554)}
+    volumes:
+      - ${CLAWCAM_APP_DATA_HOST_DIR:?set CLAWCAM_APP_DATA_HOST_DIR in .env}:/app/data
+      - ${CLAWCAM_APP_TLS_CERT_HOST_DIR:?set CLAWCAM_APP_TLS_CERT_HOST_DIR in .env}:/etc/ssl/clawcam-app:ro
+
+networks:
+  lan:
+    name: ${CLAWCAM_APP_NETWORK:?set CLAWCAM_APP_NETWORK in .env (the macvlan network name)}
+    external: true
